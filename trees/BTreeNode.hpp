@@ -23,6 +23,13 @@ private:
         bool isCold;            // Flag to indicate if this is a cold node
     };
 
+    // todo: currently unused
+    struct internal_info {
+        node_id_type id;
+        uint16_t type;
+        uint16_t size;
+    };
+
 public:
     // Calculate maximum capacities based on block size and types
     static constexpr uint16_t leaf_capacity =
@@ -96,6 +103,7 @@ public:
     }
 
     // Find child slot for internal nodes
+    // if keys = [10, 20, 30] which points to 4 child slots , child_slot(8) will return slot 0
     uint16_t child_slot(const key_type& key) const {
         auto it = std::upper_bound(keys, keys + info->size, key);
         return std::distance(keys, it);

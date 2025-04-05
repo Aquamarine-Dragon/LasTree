@@ -17,7 +17,7 @@
 #include "MemoryBlockManager.hpp"
 
 // OptimizedBTree: B+tree optimized for near-sorted data insertion
-template <typename key_type, typename value_type>
+template<typename key_type, typename value_type>
 class OptimizedBTree {
 public:
     // Type aliases for readability
@@ -27,7 +27,7 @@ public:
     using path_t = std::vector<node_id_t>;
 
     // Constants
-    static constexpr const char* name = "OptimizedBTree";
+    static constexpr const char *name = "OptimizedBTree";
     static constexpr bool concurrent = true;
     static constexpr uint16_t SPLIT_INTERNAL_POS = node_t::internal_capacity / 2;
     static constexpr uint16_t SPLIT_LEAF_POS = (node_t::leaf_capacity + 1) / 2;
@@ -37,21 +37,22 @@ public:
     enum SortPolicy { SORT_ON_SPLIT, SORT_ON_MOVE, ALWAYS_SORTED };
 
     // Constructor initializes the tree with an empty root
-    explicit OptimizedBTree(BlockManager& manager, SortPolicy policy = SORT_ON_SPLIT)
+    explicit OptimizedBTree(BlockManager &manager, SortPolicy policy = SORT_ON_SPLIT)
         : block_manager(manager),
           root_id(manager.allocate()),
           head_id(manager.allocate()),
-          sort_policy(policy),
+          sort_policy(ALWAYS_SORTED), // todo: test on sorted (policy)
           height(1),
           size(0),
-          stop_background_thread(false) {
+          stop_background_thread(true) {
+        // todo : test on background (false)
 
-        // Initialize fast path tracking
+        // initialize fast path tracking
         fast_path_min_key = std::numeric_limits<key_type>::min();
         fast_path_max_key = std::numeric_limits<key_type>::max();
         fast_path_leaf_id = head_id;
 
-        // Initialize leaf node
+        // initialize leaf node
         node_t leaf(manager.open_block(head_id), bp_node_type::LEAF);
         manager.mark_dirty(head_id);
         leaf.info->id = head_id;
@@ -66,13 +67,12 @@ public:
         root.info->size = 0;
         root.children[0] = head_id;
 
-        // Start background thread for sorting cold nodes
-        background_sort_thread = std::thread(&OptimizedBTree::background_sort_worker, this);
+        // todo: Start background thread for sorting cold nodes
+        // background_sort_thread = std::thread(&OptimizedBTree::background_sort_worker, this);
     }
 
     // Destructor ensures background thread is properly terminated
-    ~OptimizedBTree() {
-        {
+    ~OptimizedBTree() { {
             std::unique_lock<std::timed_mutex> lock(tree_mutex);
             stop_background_thread = true;
         }
@@ -83,63 +83,72 @@ public:
     }
 
     // Insert a key-value pair into the tree
-    void insert(const key_type& key, const value_type& value) {
+    void insert(const key_type &key, const value_type &value) {
+        // print();
+        // std::cout << "inserting " << key << std::endl;
         std::unique_lock<std::timed_mutex> lock(tree_mutex);
 
-        // Try fast path insertion if key is in the current fast path range
-        if (can_use_fast_path(key)) {
-            insert_fast_path(key, value);
-        } else {
-            // Regular path insertion
-            node_t leaf;
-            path_t path;
-            key_type leaf_max;
-
-            // Find the appropriate leaf and collect path information
-            find_leaf(leaf, path, key, leaf_max);
-
-            // Update fast path to this leaf for future insertions
-            fast_path_leaf_id = leaf.info->id;
-            if (leaf.info->size > 0) {
-                fast_path_min_key = leaf.keys[0];
-            } else {
-                fast_path_min_key = key;
-            }
-            fast_path_max_key = leaf_max;
-
-            // Insert based on the sort policy
-            if (sort_policy == ALWAYS_SORTED) {
-                leaf.insert_sorted(key, value);
-            } else {
-                leaf.append(key, value);
-            }
-            block_manager.mark_dirty(leaf.info->id);
-
-            // Check if leaf needs to be split
-            if (leaf.is_nearly_full()) {
-                if (sort_policy == SORT_ON_SPLIT) {
-                    leaf.sort();
-                }
-
-                // Find split position
-                uint16_t index = leaf.value_slot(key);
-                if (index < SPLIT_LEAF_POS) {
-                    node_id_t new_id;
-                    split_leaf(leaf, index, key, value, fast_path_max_key, new_id);
-                    internal_insert(path, fast_path_max_key, new_id);
-                } else {
-                    split_leaf(leaf, index, key, value, fast_path_min_key, fast_path_leaf_id);
-                    internal_insert(path, fast_path_min_key, fast_path_leaf_id);
-                }
-            }
-
-            size++;
+        if (key == 37302) {
+            std::cout << "inserting " << key << std::endl;
         }
+
+        // try fast path insertion if key is in the current fast path range
+        if (can_use_fast_path(key)) {
+            // std::cout << "using fast path" << std::endl;
+            insert_fast_path(key, value);
+            return;
+        }
+
+        // Regular path insertion
+        node_t leaf;
+        path_t path;
+        key_type leaf_max;
+
+        // Find the appropriate leaf and collect path information
+        find_leaf(leaf, path, key, leaf_max);
+
+        // Update fast path to this leaf for future insertions
+        fast_path_leaf_id = leaf.info->id;
+        if (leaf.info->size > 0) {
+            fast_path_min_key = leaf.keys[0];
+        } else {
+            // empty leaf
+            fast_path_min_key = key;
+        }
+        fast_path_max_key = leaf_max;
+
+        // Insert based on the sort policy
+        if (sort_policy == ALWAYS_SORTED) {
+            leaf.insert_sorted(key, value);
+        } else {
+            leaf.append(key, value);
+        }
+        block_manager.mark_dirty(leaf.info->id);
+
+        // Check if leaf needs to be split
+        if (leaf.is_nearly_full()) {
+            if (sort_policy == SORT_ON_SPLIT) {
+                leaf.sort();
+            }
+
+            // Find split position
+            uint16_t index = leaf.value_slot(key);
+            if (index < SPLIT_LEAF_POS) {
+                node_id_t new_id;
+                split_leaf(leaf, index, key, value, fast_path_max_key, new_id);
+                internal_insert(path, fast_path_max_key, new_id);
+            } else {
+                split_leaf(leaf, index, key, value, fast_path_min_key, fast_path_leaf_id);
+                internal_insert(path, fast_path_min_key, fast_path_leaf_id);
+            }
+        }
+
+        size++;
     }
 
     // Update an existing key with a new value
-    bool update(const key_type& key, const value_type& value) {
-        std::unique_lock<std::mutex> lock(tree_mutex);
+    bool update(const key_type &key, const value_type &value) {
+        std::unique_lock<std::timed_mutex> lock(tree_mutex);
 
         node_t leaf;
         find_leaf(leaf, key);
@@ -155,7 +164,7 @@ public:
     }
 
     // Search for a key and return its value if found
-    std::optional<value_type> get(const key_type& key) const {
+    std::optional<value_type> get(const key_type &key) const {
         std::unique_lock<std::timed_mutex> lock(tree_mutex);
 
         node_t leaf;
@@ -170,7 +179,7 @@ public:
     }
 
     // Check if a key exists in the tree
-    bool contains(const key_type& key) const {
+    bool contains(const key_type &key) const {
         std::unique_lock<std::timed_mutex> lock(tree_mutex);
 
         node_t leaf;
@@ -181,22 +190,44 @@ public:
     }
 
     // Print the tree structure (for debugging)
-    void print() const {
-        std::unique_lock<std::timed_mutex> lock(tree_mutex);
+    void print(bool show_all_values = false) const {
+        // todo 暂时禁用锁以便调试
+        // std::unique_lock<std::mutex> lock(tree_mutex);
 
         std::cout << "B+Tree Structure:" << std::endl;
-        print_node(root_id, 0);
+        print_node(root_id, 0, show_all_values);
 
         std::cout << "\nLeaf Node Chain:" << std::endl;
         node_id_t curr_id = head_id;
         while (curr_id != INVALID_NODE_ID) {
             node_t node(block_manager.open_block(curr_id));
-            std::cout << "Leaf [";
-            for (uint16_t i = 0; i < node.info->size; i++) {
-                std::cout << "(" << node.keys[i] << ":" << node.values[i] << ")";
-                if (i < node.info->size - 1) std::cout << ", ";
+
+            std::cout << "Leaf ID " << curr_id << ": [";
+
+            if (show_all_values) {
+                // 显示所有键值对
+                for (uint16_t i = 0; i < node.info->size; i++) {
+                    std::cout << "(" << node.keys[i] << ":" << node.values[i] << ")";
+                    if (i < node.info->size - 1) std::cout << ", ";
+                }
+            } else {
+                // 只显示最小和最大值
+                if (node.info->size > 0) {
+                    std::cout << "min=(" << node.keys[0] << ":" << node.values[0] << ")";
+
+                    if (node.info->size > 1) {
+                        std::cout << ", max=(" << node.keys[node.info->size - 1]
+                                << ":" << node.values[node.info->size - 1] << ")";
+                        std::cout << ", size=" << node.info->size;
+                    }
+                } else {
+                    std::cout << "empty";
+                }
             }
+
             std::cout << "] ";
+
+            // 显示额外信息
             std::cout << (node.info->isSorted ? "sorted" : "unsorted");
             if (curr_id == fast_path_leaf_id) std::cout << " (fast path)";
             std::cout << std::endl;
@@ -222,7 +253,7 @@ public:
 
 private:
     // Memory manager for allocating and tracking node blocks
-    BlockManager& block_manager;
+    BlockManager &block_manager;
 
     // Tree structure identifiers
     node_id_t root_id;
@@ -249,7 +280,7 @@ private:
     bool stop_background_thread;
 
     // Check if a key can use the fast path for insertion
-    bool can_use_fast_path(const key_type& key) const {
+    bool can_use_fast_path(const key_type &key) const {
         if (fast_path_leaf_id == INVALID_NODE_ID) {
             return false;
         }
@@ -258,7 +289,7 @@ private:
     }
 
     // Insert using the fast path (O(1) insertion for sequential data)
-    void insert_fast_path(const key_type& key, const value_type& value) {
+    void insert_fast_path(const key_type &key, const value_type &value) {
         node_t leaf(block_manager.open_block(fast_path_leaf_id));
         block_manager.mark_dirty(fast_path_leaf_id);
 
@@ -277,6 +308,8 @@ private:
         }
 
         // If we couldn't insert, we need to split the leaf
+        std::cout << "Before leaf split: " << std::endl;
+        print();
         path_t path;
         key_type leaf_max;
         find_path_to_node(path, fast_path_leaf_id, leaf_max);
@@ -285,21 +318,28 @@ private:
             leaf.sort();
         }
 
+
         uint16_t index = leaf.value_slot(key);
-        if (index < SPLIT_LEAF_POS) {
+        if (index < SPLIT_LEAF_POS) {// insert into old leaf
             node_id_t new_id;
             split_leaf(leaf, index, key, value, fast_path_max_key, new_id);
             internal_insert(path, fast_path_max_key, new_id);
-        } else {
+            // std::cout << "Inserting: " << key << " to old leaf" << std::endl;
+        } else { // insert into new leaf
             split_leaf(leaf, index, key, value, fast_path_min_key, fast_path_leaf_id);
             internal_insert(path, fast_path_min_key, fast_path_leaf_id);
+            // std::cout << "Inserting: " << key << " to new leaf" << std::endl;
         }
+        // todo
+        std::cout << "After leaf split: " << std::endl;
+        print();
+        std::cout << std::endl;
 
         size++;
     }
 
     // Find the leaf node that should contain the given key
-    void find_leaf(node_t& node, const key_type& key) const {
+    void find_leaf(node_t &node, const key_type &key) const {
         node_id_t node_id = root_id;
         node.load(block_manager.open_block(node_id));
 
@@ -312,7 +352,8 @@ private:
     }
 
     // Find the leaf and collect the path from root to leaf
-    void find_leaf(node_t& node, path_t& path, const key_type& key, key_type& leaf_max) const {
+    void find_leaf(node_t &node, path_t &path, const key_type &key, key_type &leaf_max) const {
+        // initialize leaf max value as max possible value
         leaf_max = std::numeric_limits<key_type>::max();
         node_id_t node_id = root_id;
         path.reserve(height);
@@ -334,84 +375,92 @@ private:
         }
     }
 
-    // Find the path from root to a specific node
-    void find_path_to_node(path_t& path, node_id_t target_id, key_type& leaf_max) const {
-        // todo: add max iterations to avoid infinite loop
-        const int MAX_ITERATIONS = 100;
-        int iterations = 0;
-
-
+    void find_path_to_node(path_t &path, node_id_t target_id, key_type &leaf_max) const {
+        // std::cout << "target: " << target_id << ", leaf max: " << leaf_max << std::endl;
         leaf_max = std::numeric_limits<key_type>::max();
-        node_id_t node_id = root_id;
-        path.reserve(height);
 
-        node_t node(block_manager.open_block(node_id));
-
-        // Traverse until we find the target node
-        while (node.info->type == bp_node_type::INTERNAL  && iterations < MAX_ITERATIONS) {
-            iterations++;
-
-            // 每10次迭代输出一次日志
-            if (iterations % 10 == 0) {
-                std::cout << "find_path_to_node: iteration " << iterations
-                          << ", node_id=" << node_id
-                          << ", target_id=" << target_id << std::endl;
-            }
-
-
-            path.push_back(node_id);
-
-            // Find the child that leads to the target
-            bool found = false;
-            for (uint16_t i = 0; i <= node.info->size; i++) {
-                node_id_t child_id = node.children[i];
-
-                // Check if this is the target or a path to it
-                if (child_id == target_id) {
-                    found = true;
-                    if (i < node.info->size) {
-                        leaf_max = node.keys[i];
-                    }
-                    break;
-                }
-
-                // Check if target is in subtree
-                node_t child_node(block_manager.open_block(child_id));
-                if (child_node.info->type == bp_node_type::INTERNAL) {
-                    // More complex check for internal nodes...
-                    // This is a simplified approach
-                    if (i == node.info->size ||
-                        (i > 0 && target_id < node.children[i + 1])) {
-                        node_id = child_id;
-                        if (i < node.info->size) {
-                            leaf_max = node.keys[i];
-                        }
-                        found = true;
-                        break;
-                        }
-                }
-            }
-
-            if (!found) {
-                // Fallback: linear search all the way down
-                // This is inefficient but ensures we find the path
-                break;
-            }
-
-            node.load(block_manager.open_block(node_id));
+        // 特殊情况：如果目标就是根节点，则路径为空
+        if (target_id == root_id) {
+            return;
         }
-        // 如果达到最大迭代次数，抛出异常
-        if (iterations >= MAX_ITERATIONS) {
-            throw std::runtime_error("Maximum iterations reached in find_path_to_node");
+
+        // 逐层查找目标节点
+        node_id_t curr_id = root_id;
+        node_t curr_node(block_manager.open_block(curr_id));
+
+        // 创建一个集合记录已访问的节点，防止循环
+        std::unordered_set<node_id_t> visited;
+        while (curr_node.info->type == bp_node_type::INTERNAL) {
+            // std::cout << "cur id: " << std::endl;
+            // 防止循环
+            if (visited.find(curr_id) != visited.end()) {
+                throw std::runtime_error("Cycle detected in tree structure");
+            }
+            visited.insert(curr_id);
+
+            // 记录当前节点到路径
+            path.push_back(curr_id);
+
+            // 在子节点中搜索目标节点
+            for (uint16_t i = 0; i <= curr_node.info->size; i++) {
+                node_id_t child_id = curr_node.children[i];
+
+                // 如果找到目标，记录 leaf_max 并结束搜索
+                if (child_id == target_id) {
+                    if (i < curr_node.info->size) {
+                        leaf_max = curr_node.keys[i];
+                    }
+                    return;
+                }
+
+                // 尝试检查子节点
+                node_t child_node(block_manager.open_block(child_id));
+
+                // todo: 如果子节点是内部节点，我们需要继续搜索
+                if (child_node.info->type == bp_node_type::INTERNAL) {
+                    // 检查子树是否可能包含目标节点
+                    // 这里的逻辑需要基于你的树的结构，下面是一个简单的示例
+                    bool might_contain = false;
+
+                    // 检查所有子节点的子节点
+                    for (uint16_t j = 0; j <= child_node.info->size; j++) {
+                        if (child_node.children[j] == target_id) {
+                            might_contain = true;
+                            if (j < child_node.info->size) {
+                                leaf_max = std::min(leaf_max, child_node.keys[j]);
+                            }
+                            break;
+                        }
+                    }
+
+                    if (might_contain) {
+                        curr_id = child_id;
+                        curr_node = child_node;
+                        break;
+                    }
+                }
+            }
+
+            // if path not found, throw exception
+            print();
+            std::cout << "target: " << target_id << std::endl;
+            throw std::runtime_error("Target node not found in tree1");
+        }
+
+        // 如果我们结束循环但仍然没有到达目标节点的父节点，说明有问题
+        if (path.empty() || std::find(curr_node.children,
+                                      curr_node.children + curr_node.info->size + 1,
+                                      target_id) == curr_node.children + curr_node.info->size + 1) {
+            throw std::runtime_error("Target node not found in tree2");
         }
     }
 
     // Split a leaf node during insertion
-    void split_leaf(node_t& leaf, uint16_t index, const key_type& key,
-                   const value_type& value, key_type& new_key, node_id_t& new_id) {
+    void split_leaf(node_t &leaf, uint16_t index, const key_type &key,
+                    const value_type &value, key_type &new_key, node_id_t &new_id) {
         // todo: test
         // 添加调试输出
-        std::cout << "Splitting leaf at index " << index << " with key " << key << std::endl;
+        // std::cout << "Splitting leaf at index " << index << " with key " << key << std::endl;
 
         // 进行越界检查
         if (index > leaf.info->size + 1) {
@@ -420,28 +469,13 @@ private:
 
         block_manager.mark_dirty(leaf.info->id);
 
-        // 检查是否能分配新块
-        node_id_t new_leaf_id;
-        try {
-            new_leaf_id = block_manager.allocate();
-        } catch (const std::exception& e) {
-            std::cerr << "Error allocating block: " << e.what() << std::endl;
-            throw;
-        }
-
-        // 检查快速路径叶节点ID是否有效
-        if (fast_path_leaf_id != INVALID_NODE_ID && fast_path_leaf_id != leaf.info->id) {
-            std::cout << "Warning: fast_path_leaf_id (" << fast_path_leaf_id
-                      << ") doesn't match leaf.info->id (" << leaf.info->id << ")" << std::endl;
-        }
-
-
-        block_manager.mark_dirty(leaf.info->id);
         // Create a new leaf node
+        node_id_t new_leaf_id = block_manager.allocate();
         node_t new_leaf(block_manager.open_block(new_leaf_id), bp_node_type::LEAF);
         block_manager.mark_dirty(new_leaf_id);
 
         if (sort_policy == ALWAYS_SORTED) {
+
             // Traditional split with full sorting
             uint16_t split_pos = SPLIT_LEAF_POS;
 
@@ -489,7 +523,7 @@ private:
             leaf.info->next_id = new_leaf_id;
 
             // Create temporary vector for the right partition plus the new key-value
-            std::vector<std::pair<key_type, value_type>> right_partition;
+            std::vector<std::pair<key_type, value_type> > right_partition;
             right_partition.reserve(node_t::leaf_capacity - partition_pos + 1);
 
             // Insert the new key-value at the right position in the right partition
@@ -533,7 +567,7 @@ private:
     }
 
     // Insert a key and child into internal nodes along the path
-    void internal_insert(const path_t& path, key_type key, node_id_t child_id) {
+    void internal_insert(const path_t &path, key_type key, node_id_t child_id) {
         // Process path in reverse (from leaf's parent up to root)
         for (auto it = path.rbegin(); it != path.rend(); ++it) {
             node_id_t node_id = *it;
@@ -547,94 +581,102 @@ private:
             if (node.info->size < node_t::internal_capacity) {
                 // Shift existing keys and children to make room
                 std::memmove(node.keys + index + 1, node.keys + index,
-                            (node.info->size - index) * sizeof(key_type));
+                             (node.info->size - index) * sizeof(key_type));
                 std::memmove(node.children + index + 2, node.children + index + 1,
-                            (node.info->size - index) * sizeof(node_id_t));
+                             (node.info->size - index) * sizeof(node_id_t));
 
                 // Insert new key and child
                 node.keys[index] = key;
                 node.children[index + 1] = child_id;
-                node.info->size++;
+                ++node.info->size;
                 return;
             }
 
             // Node is full, need to split it
+            std::cout << "Before internal split: " << std::endl;
+            print();
+
+            // Save original size
+            uint16_t original_size = node.info->size;
+
             node_id_t new_node_id = block_manager.allocate();
             node_t new_node(block_manager.open_block(new_node_id), bp_node_type::INTERNAL);
             block_manager.mark_dirty(new_node_id);
 
             // Prepare split position
-            uint16_t split_pos = SPLIT_INTERNAL_POS;
+            uint16_t split_pos = SPLIT_INTERNAL_POS; // the key at split_pos will be propagated up to parent node
             new_node.info->id = new_node_id;
             new_node.info->next_id = node.info->next_id;
-            new_node.info->size = node_t::internal_capacity - split_pos;
             node.info->next_id = new_node_id;
-            node.info->size = split_pos;
+
+            // update node sizes
+            new_node.info->size = node_t::internal_capacity - split_pos - 1; // new node get latter half keys
+            node.info->size = split_pos;// original node get first half keys
 
             // Handle the split based on where the new key goes
             if (index < split_pos) {
                 // New key goes in left node
 
-                // Copy keys and children to new node
-                std::memcpy(new_node.keys, node.keys + split_pos,
-                           new_node.info->size * sizeof(key_type));
-                std::memcpy(new_node.children, node.children + split_pos,
-                           (new_node.info->size + 1) * sizeof(node_id_t));
+                // Copy keys and children to new node from (split_pos + 1)
+                std::memcpy(new_node.keys, node.keys + split_pos + 1,
+                        new_node.info->size * sizeof(key_type));
+                std::memcpy(new_node.children, node.children + split_pos + 1,
+                            (new_node.info->size + 1) * sizeof(node_id_t));
 
                 // Shift to make room for new key in original node
                 std::memmove(node.keys + index + 1, node.keys + index,
-                           (split_pos - index) * sizeof(key_type));
+                             (split_pos - index) * sizeof(key_type));
                 std::memmove(node.children + index + 2, node.children + index + 1,
-                           (split_pos - index) * sizeof(node_id_t));
+                             (split_pos - index) * sizeof(node_id_t));
 
                 // Insert new key and child
                 node.keys[index] = key;
                 node.children[index + 1] = child_id;
+                ++node.info->size;
 
                 // Key to promote to parent
-                key = node.keys[split_pos - 1];
-            }
-            else if (index == split_pos) {
+                key = node.keys[split_pos];
+            } else if (index == split_pos) {
                 // New key becomes the separator/promoted key
 
                 // Copy keys and children to new node
-                std::memcpy(new_node.keys, node.keys + split_pos,
-                           new_node.info->size * sizeof(key_type));
+                std::memcpy(new_node.keys, node.keys + split_pos + 1,
+                        new_node.info->size * sizeof(key_type));
                 std::memcpy(new_node.children + 1, node.children + split_pos + 1,
-                           new_node.info->size * sizeof(node_id_t));
+                            new_node.info->size * sizeof(node_id_t));
 
                 // Set up the new node's first child to be the new child
                 new_node.children[0] = child_id;
 
                 // Key to promote is already correct
-            }
-            else {
+            } else {
                 // New key goes in right (new) node
-                uint16_t new_index = index - split_pos;
+                uint16_t new_index = index - split_pos - 1;
 
-                // Copy keys before insertion point
-                std::memcpy(new_node.keys, node.keys + split_pos,
-                           new_index * sizeof(key_type));
+                // Copy keys before new key (skip promote key)
+                std::memcpy(new_node.keys, node.keys + split_pos + 1,
+                            new_index * sizeof(key_type));
 
-                // Insert new key
+                // insert new key
                 new_node.keys[new_index] = key;
 
                 // Copy keys after insertion point
                 std::memcpy(new_node.keys + new_index + 1, node.keys + index,
-                           (node_t::internal_capacity - index) * sizeof(key_type));
+                            (original_size - index) * sizeof(key_type));
 
                 // Copy children before insertion point
-                std::memcpy(new_node.children, node.children + split_pos,
-                           (new_index + 1) * sizeof(node_id_t));
+                std::memcpy(new_node.children, node.children + split_pos + 1,
+                            (new_index + 1) * sizeof(node_id_t));
 
                 // Insert new child
                 new_node.children[new_index + 1] = child_id;
 
                 // Copy children after insertion point
                 std::memcpy(new_node.children + new_index + 2, node.children + index + 1,
-                           (node_t::internal_capacity - index) * sizeof(node_id_t));
+                            (original_size - index) * sizeof(node_id_t));
 
                 // Key to promote to parent
+                ++new_node.info->size;
                 key = node.keys[split_pos];
             }
 
@@ -645,10 +687,14 @@ private:
         // If we've processed the entire path and still have a key to insert,
         // we need to create a new root
         create_new_root(key, child_id);
+
+        std::cout << "After internal split: " << std::endl;
+        print();
+        std::cout << std::endl;
     }
 
     // Create a new root when the height of the tree increases
-    void create_new_root(const key_type& key, node_id_t right_child_id) {
+    void create_new_root(const key_type &key, node_id_t right_child_id) {
         node_id_t left_child_id = block_manager.allocate();
 
         // Get current root
@@ -666,15 +712,15 @@ private:
         if (old_root.info->type == bp_node_type::INTERNAL) {
             // Copy keys and children
             std::memcpy(left_child.keys, old_root.keys,
-                       old_root.info->size * sizeof(key_type));
+                        old_root.info->size * sizeof(key_type));
             std::memcpy(left_child.children, old_root.children,
-                       (old_root.info->size + 1) * sizeof(node_id_t));
+                        (old_root.info->size + 1) * sizeof(node_id_t));
         } else {
             // Copy keys and values for leaf nodes
             std::memcpy(left_child.keys, old_root.keys,
-                       old_root.info->size * sizeof(key_type));
+                        old_root.info->size * sizeof(key_type));
             std::memcpy(left_child.values, old_root.values,
-                       old_root.info->size * sizeof(value_type));
+                        old_root.info->size * sizeof(value_type));
         }
 
         // Convert old root to internal node (if it was a leaf)
@@ -698,9 +744,7 @@ private:
     void background_sort_worker() {
         while (true) {
             node_id_t node_id_to_sort;
-            bool has_work = false;
-
-            {
+            bool has_work = false; {
                 // 使用超时锁定以防止死锁
                 std::unique_lock<std::timed_mutex> lock(tree_mutex, std::chrono::milliseconds(100));
                 if (!lock.owns_lock()) {
@@ -729,7 +773,7 @@ private:
                         block_manager.mark_dirty(node_id_to_sort);
                         node.sort();
                     }
-                } catch (const std::exception& e) {
+                } catch (const std::exception &e) {
                     std::cerr << "Error in background sort: " << e.what() << std::endl;
                 }
             } else {
@@ -740,7 +784,7 @@ private:
     }
 
     // Print a node and its children recursively (for debugging)
-    void print_node(node_id_t node_id, int level) const {
+    void print_node(node_id_t node_id, int level, bool show_all_values) const {
         for (int i = 0; i < level; i++) {
             std::cout << "  ";
         }
@@ -748,22 +792,61 @@ private:
         node_t node(block_manager.open_block(node_id));
 
         if (node.info->type == bp_node_type::LEAF) {
-            std::cout << "Leaf " << node_id << ": [";
-            for (uint16_t i = 0; i < node.info->size; i++) {
-                std::cout << node.keys[i];
-                if (i < node.info->size - 1) std::cout << ", ";
+            std::cout << "Leaf ID " << node_id << ": [";
+
+            if (show_all_values) {
+                // 显示所有键
+                for (uint16_t i = 0; i < node.info->size; i++) {
+                    std::cout << node.keys[i];
+                    if (i < node.info->size - 1) std::cout << ", ";
+                }
+            } else {
+                // 只显示最小和最大值
+                if (node.info->size > 0) {
+                    std::cout << "min=" << node.keys[0];
+
+                    if (node.info->size > 1) {
+                        std::cout << ", max=" << node.keys[node.info->size - 1];
+                        std::cout << ", size=" << node.info->size;
+                    }
+                } else {
+                    std::cout << "empty";
+                }
             }
+
             std::cout << "]" << std::endl;
         } else {
-            std::cout << "Internal " << node_id << ": [";
-            for (uint16_t i = 0; i < node.info->size; i++) {
-                std::cout << node.keys[i];
-                if (i < node.info->size - 1) std::cout << ", ";
+            std::cout << "Internal ID " << node_id << ": [";
+
+            if (show_all_values) {
+                // 显示所有键
+                for (uint16_t i = 0; i < node.info->size; i++) {
+                    std::cout << node.keys[i];
+                    if (i < node.info->size - 1) std::cout << ", ";
+                }
+            } else {
+                for (uint16_t i = 0; i < node.info->size; i++) {
+                    std::cout << node.keys[i];
+                    if (i < node.info->size - 1) std::cout << ", ";
+                }
+                // 只显示最小和最大值
+                // if (node.info->size > 0) {
+                //     std::cout << "min=" << node.keys[0];
+                //
+                //     if (node.info->size > 1) {
+                //         std::cout << ", max=" << node.keys[node.info->size - 1];
+                //         std::cout << ", size=" << node.info->size;
+                //     }
+                // } else {
+                //     std::cout << "empty";
+                // }
             }
+
             std::cout << "]" << std::endl;
 
+            // 递归打印子节点
             for (uint16_t i = 0; i <= node.info->size; i++) {
-                print_node(node.children[i], level + 1);
+                print_node(node.children[i], level + 1, show_all_values);
             }
         }
     }

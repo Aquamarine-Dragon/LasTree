@@ -63,7 +63,7 @@ plt.plot(data['Sortedness_Percent'], data['OptimizedFastPathHits'], 'r-o')
 # Add percentage labels
 for i, row in data.iterrows():
     if row['OptimizedNodes'] > 0:
-        hit_percent = row['OptimizedFastPathHits'] / row['OptimizedNodes'] * 100
+        hit_percent = row['OptimizedFastPathHits'] / row['OptimizedTotalInserts'] * 100
         plt.annotate(f"{hit_percent:.1f}%",
                      (row['Sortedness_Percent'], row['OptimizedFastPathHits']),
                      textcoords="offset points",

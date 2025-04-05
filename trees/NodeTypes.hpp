@@ -9,8 +9,8 @@
 
 // Node types used in B+Tree
 enum bp_node_type {
-    LEAF,
-    INTERNAL
+    LEAF, // 0
+    INTERNAL // 1
 };
 
 #endif //NODETYPES_HPP

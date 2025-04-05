@@ -14,7 +14,7 @@
 #include "MemoryBlockManager.hpp"
 
 // Enable verbose logging
-bool VERBOSE_LOGGING = true;
+bool VERBOSE_LOGGING = false;
 
 // Progress indicator
 class ProgressIndicator {
@@ -156,6 +156,7 @@ struct PerformanceMetrics {
     double searchTime = 0;  // in milliseconds
     double memoryUsage = 0; // in bytes (if available)
     size_t nodeCount = 0;   // number of nodes allocated
+    size_t totalInserts = 0; // number of inserts
     size_t fastPathHits = 0;// number of fast path insertions (for optimized tree)
 
     // Print metrics in a formatted way
@@ -253,6 +254,8 @@ public:
                 errorMetric.insertTime = -1;
                 errorMetric.searchTime = -1;
                 optimizedMetrics.push_back(errorMetric);
+                // todo: remove
+                std::exit(EXIT_FAILURE);
             }
 
             // Calculate speedup if no errors
@@ -404,6 +407,7 @@ private:
         // Get memory usage and fast path hits
         metrics.nodeCount = blockManager.get_allocated_count();
         metrics.fastPathHits = tree.get_fast_path_hits();
+        metrics.totalInserts = data.size();
 
         if (VERBOSE_LOGGING) {
             std::cout << "Optimized B+Tree test complete: "
@@ -428,7 +432,7 @@ private:
         // Header
         file << "Sortedness,SimpleInsertTime,SimpleSearchTime,SimpleNodes,"
              << "OptimizedInsertTime,OptimizedSearchTime,OptimizedNodes,OptimizedFastPathHits,"
-             << "InsertSpeedup,SearchSpeedup\n";
+             << "OptimizedTotalInserts,InsertSpeedup,SearchSpeedup\n";
 
         // Data
         for (size_t i = 0; i < sortednessLevels.size(); i++) {
@@ -447,6 +451,7 @@ private:
                  << optimizedMetrics[i].insertTime << ","
                  << optimizedMetrics[i].searchTime << ","
                  << optimizedMetrics[i].nodeCount << ","
+                 << optimizedMetrics[i].totalInserts << ","
                  << optimizedMetrics[i].fastPathHits << ","
                  << insertSpeedup << ","
                  << searchSpeedup << "\n";
@@ -467,16 +472,21 @@ int main(int argc, char* argv[]) {
     }
 
     // Define sortedness levels to test
+    // std::vector<double> sortednessLevels = {
+    //     1.0,   // Fully sorted
+    //     0.99,  // 99% sorted
+    //     0.95,  // 95% sorted
+    //     0.9,   // 90% sorted
+    //     0.8,   // 80% sorted
+    //     0.7,   // 70% sorted
+    //     0.5,   // 50% sorted
+    //     0.3,   // 30% sorted
+    //     0.1,   // 10% sorted
+    //     0.0    // Completely random
+    // };
+
     std::vector<double> sortednessLevels = {
         1.0,   // Fully sorted
-        0.99,  // 99% sorted
-        0.95,  // 95% sorted
-        0.9,   // 90% sorted
-        0.8,   // 80% sorted
-        0.7,   // 70% sorted
-        0.5,   // 50% sorted
-        0.3,   // 30% sorted
-        0.1,   // 10% sorted
         0.0    // Completely random
     };
 
@@ -485,61 +495,61 @@ int main(int argc, char* argv[]) {
     benchmark.runBenchmark(dataSize, sortednessLevels);
 
     // Additional small verification test
-    std::cout << "\n===== Verification Test =====\n";
-
-    // Test data
-    std::vector<std::pair<int, std::string>> testData = {
-        {5, "five"}, {8, "eight"}, {1, "one"}, {7, "seven"},
-        {3, "three"}, {12, "twelve"}, {9, "nine"}, {6, "six"}
-    };
+    // std::cout << "\n===== Verification Test =====\n";
+    //
+    // // Test data
+    // std::vector<std::pair<int, std::string>> testData = {
+    //     {5, "five"}, {8, "eight"}, {1, "one"}, {7, "seven"},
+    //     {3, "three"}, {12, "twelve"}, {9, "nine"}, {6, "six"}
+    // };
 
     // Reset block manager
-    InMemoryBlockManager<uint32_t> verifyManager(100);
+    // InMemoryBlockManager<uint32_t> verifyManager(100);
 
     // Test simple tree
-    {
-        SimpleBPlusTree<int, std::string> tree(verifyManager);
-
-        std::cout << "Testing SimpleBPlusTree:\n";
-        for (const auto& pair : testData) {
-            tree.insert(pair.first, pair.second);
-        }
-
-        // Test search
-        for (int i = 1; i <= 12; i++) {
-            auto result = tree.get(i);
-            if (result) {
-                std::cout << "Found " << i << ": " << *result << std::endl;
-            } else {
-                std::cout << "Did not find " << i << std::endl;
-            }
-        }
-        std::cout << std::endl;
-    }
+    // {
+    //     SimpleBPlusTree<int, std::string> tree(verifyManager);
+    //
+    //     std::cout << "Testing SimpleBPlusTree:\n";
+    //     for (const auto& pair : testData) {
+    //         tree.insert(pair.first, pair.second);
+    //     }
+    //
+    //     // Test search
+    //     for (int i = 1; i <= 12; i++) {
+    //         auto result = tree.get(i);
+    //         if (result) {
+    //             std::cout << "Found " << i << ": " << *result << std::endl;
+    //         } else {
+    //             std::cout << "Did not find " << i << std::endl;
+    //         }
+    //     }
+    //     std::cout << std::endl;
+    // }
 
     // Reset block manager
-    verifyManager.reset();
+    // verifyManager.reset();
 
     // Test optimized tree
-    {
-        OptimizedBTree<int, std::string> tree(verifyManager);
-
-        std::cout << "Testing OptimizedBTree:\n";
-        for (const auto& pair : testData) {
-            tree.insert(pair.first, pair.second);
-        }
-
-        // Test search
-        for (int i = 1; i <= 12; i++) {
-            auto result = tree.get(i);
-            if (result) {
-                std::cout << "Found " << i << ": " << *result << std::endl;
-            } else {
-                std::cout << "Did not find " << i << std::endl;
-            }
-        }
-        std::cout << std::endl;
-    }
+    // {
+    //     OptimizedBTree<int, std::string> tree(verifyManager);
+    //
+    //     std::cout << "Testing OptimizedBTree:\n";
+    //     for (const auto& pair : testData) {
+    //         tree.insert(pair.first, pair.second);
+    //     }
+    //
+    //     // Test search
+    //     for (int i = 1; i <= 12; i++) {
+    //         auto result = tree.get(i);
+    //         if (result) {
+    //             std::cout << "Found " << i << ": " << *result << std::endl;
+    //         } else {
+    //             std::cout << "Did not find " << i << std::endl;
+    //         }
+    //     }
+    //     std::cout << std::endl;
+    // }
 
     return 0;
 }

@@ -15,6 +15,11 @@ add_executable(BPlusTreeOpti
         BTreeBenchmark.cpp
 )
 
+# Test executable
+add_executable(TreeTest
+        test_trees.cpp
+)
+
 # Add optional secondary index test program if desired
 # add_executable(btree_secondary_index secondary_index.cpp)
 
