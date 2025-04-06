@@ -241,84 +241,122 @@ private:
         new_id = new_leaf_id;
     }
     
-    // Insert a key and child into internal nodes along the path
-    void internal_insert(const path_t& path, key_type key, node_id_t child_id) {
+    void internal_insert(const path_t &path, key_type key, node_id_t child_id) {
         // Process path in reverse (from leaf's parent up to root)
         for (auto it = path.rbegin(); it != path.rend(); ++it) {
             node_id_t node_id = *it;
             node_t node(block_manager.open_block(node_id));
             block_manager.mark_dirty(node_id);
-            
+
             // Find the position where key should be inserted
             uint16_t index = node.child_slot(key);
-            
+
             // If there's room in the node, insert and we're done
             if (node.info->size < node_t::internal_capacity) {
                 // Shift existing keys and children to make room
                 std::memmove(node.keys + index + 1, node.keys + index,
-                            (node.info->size - index) * sizeof(key_type));
+                             (node.info->size - index) * sizeof(key_type));
                 std::memmove(node.children + index + 2, node.children + index + 1,
-                            (node.info->size - index) * sizeof(node_id_t));
-                
+                             (node.info->size - index) * sizeof(node_id_t));
+
                 // Insert new key and child
                 node.keys[index] = key;
                 node.children[index + 1] = child_id;
-                node.info->size++;
+                ++node.info->size;
                 return;
             }
-            
-            // Node is full, need to split it
+
+            // Save original size
+            uint16_t original_size = node.info->size;
+
             node_id_t new_node_id = block_manager.allocate();
             node_t new_node(block_manager.open_block(new_node_id), bp_node_type::INTERNAL);
             block_manager.mark_dirty(new_node_id);
-            
+
             // Prepare split position
-            uint16_t split_pos = SPLIT_INTERNAL_POS;
-            
-            // Create a temporary array with all keys and children
-            std::vector<key_type> all_keys(node.keys, node.keys + node.info->size);
-            all_keys.insert(all_keys.begin() + index, key);
-            
-            std::vector<node_id_t> all_children(node.children, node.children + node.info->size + 1);
-            all_children.insert(all_children.begin() + index + 1, child_id);
-            
-            // Set up the new node
+            uint16_t split_pos = SPLIT_INTERNAL_POS; // the key at split_pos will be propagated up to parent node
             new_node.info->id = new_node_id;
             new_node.info->next_id = node.info->next_id;
             node.info->next_id = new_node_id;
-            
-            // Key that will move up to the parent
-            key = all_keys[split_pos];
-            
-            // Distribute keys and children
-            node.info->size = split_pos;
-            for (uint16_t i = 0; i < split_pos; i++) {
-                node.keys[i] = all_keys[i];
+
+            // update node sizes
+            new_node.info->size = node_t::internal_capacity - split_pos - 1; // new node get latter half keys
+            node.info->size = split_pos;// original node get first half keys
+
+            // Handle the split based on where the new key goes
+            if (index < split_pos) {
+                // New key goes in left node
+
+                // Copy keys and children to new node from (split_pos + 1)
+                std::memcpy(new_node.keys, node.keys + split_pos + 1,
+                        new_node.info->size * sizeof(key_type));
+                std::memcpy(new_node.children, node.children + split_pos + 1,
+                            (new_node.info->size + 1) * sizeof(node_id_t));
+
+                // Shift to make room for new key in original node
+                std::memmove(node.keys + index + 1, node.keys + index,
+                             (split_pos - index) * sizeof(key_type));
+                std::memmove(node.children + index + 2, node.children + index + 1,
+                             (split_pos - index) * sizeof(node_id_t));
+
+                // Insert new key and child
+                node.keys[index] = key;
+                node.children[index + 1] = child_id;
+                ++node.info->size;
+
+                // Key to promote to parent
+                key = node.keys[split_pos];
+            } else if (index == split_pos) {
+                // New key becomes the separator/promoted key
+
+                // Copy keys and children to new node
+                std::memcpy(new_node.keys, node.keys + split_pos + 1,
+                        new_node.info->size * sizeof(key_type));
+                std::memcpy(new_node.children + 1, node.children + split_pos + 1,
+                            new_node.info->size * sizeof(node_id_t));
+
+                // Set up the new node's first child to be the new child
+                new_node.children[0] = child_id;
+
+                // Key to promote is already correct
+            } else {
+                // New key goes in right (new) node
+                uint16_t new_index = index - split_pos - 1;
+
+                // Copy keys before new key (skip promote key)
+                std::memcpy(new_node.keys, node.keys + split_pos + 1,
+                            new_index * sizeof(key_type));
+
+                // insert new key
+                new_node.keys[new_index] = key;
+
+                // Copy keys after insertion point
+                std::memcpy(new_node.keys + new_index + 1, node.keys + index,
+                            (original_size - index) * sizeof(key_type));
+
+                // Copy children before insertion point
+                std::memcpy(new_node.children, node.children + split_pos + 1,
+                            (new_index + 1) * sizeof(node_id_t));
+
+                // Insert new child
+                new_node.children[new_index + 1] = child_id;
+
+                // Copy children after insertion point
+                std::memcpy(new_node.children + new_index + 2, node.children + index + 1,
+                            (original_size - index) * sizeof(node_id_t));
+
+                // Key to promote to parent
+                ++new_node.info->size;
+                key = node.keys[split_pos];
             }
-            for (uint16_t i = 0; i <= split_pos; i++) {
-                node.children[i] = all_children[i];
-            }
-            
-            new_node.info->size = all_keys.size() - split_pos - 1;
-            for (uint16_t i = 0; i < new_node.info->size; i++) {
-                new_node.keys[i] = all_keys[split_pos + 1 + i];
-            }
-            for (uint16_t i = 0; i <= new_node.info->size; i++) {
-                new_node.children[i] = all_children[split_pos + 1 + i];
-            }
-            
-            // Continue with the parent node
+
+            // Continue upward with new key and right node
             child_id = new_node_id;
         }
-        
-        // If we've processed the entire path and still have a key to insert,
-        // we need to create a new root
         create_new_root(key, child_id);
     }
     
     // create a new root when the tree height increases
-    // key: key that we want to elect to new node
-    // right_child_id: the right sub tree id of this key
     void create_new_root(const key_type& key, node_id_t right_child_id) {
         // allocate a new left node, this will contains our original root's content
         node_id_t left_child_id = block_manager.allocate();
@@ -331,7 +369,6 @@ private:
         block_manager.mark_dirty(left_child_id);
         
         // Copy contents of old root to left child
-        // std::memcpy(left_child.info, old_root.info, sizeof(typename node_t::node_info));
         left_child.copyInfoFrom(old_root);
         left_child.info->id = left_child_id;
         

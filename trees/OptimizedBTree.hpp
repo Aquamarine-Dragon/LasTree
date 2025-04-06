@@ -30,7 +30,8 @@ public:
     static constexpr const char *name = "OptimizedBTree";
     static constexpr bool concurrent = true;
     static constexpr uint16_t SPLIT_INTERNAL_POS = node_t::internal_capacity / 2;
-    static constexpr uint16_t SPLIT_LEAF_POS = (node_t::leaf_capacity + 1) / 2;
+    // static constexpr uint16_t SPLIT_LEAF_POS = (node_t::leaf_capacity + 1) / 2;
+    static constexpr uint16_t SPLIT_LEAF_POS = node_t::leaf_capacity * 9 / 10;
     static constexpr node_id_t INVALID_NODE_ID = std::numeric_limits<node_id_t>::max();
 
     // Node policies for handling unsorted leaves
@@ -63,7 +64,7 @@ public:
         node_t root(manager.open_block(root_id), bp_node_type::INTERNAL);
         manager.mark_dirty(root_id);
         root.info->id = root_id;
-        root.info->next_id = INVALID_NODE_ID;
+        // root.info->next_id = INVALID_NODE_ID;
         root.info->size = 0;
         root.children[0] = head_id;
 
@@ -84,13 +85,8 @@ public:
 
     // Insert a key-value pair into the tree
     void insert(const key_type &key, const value_type &value) {
-        // print();
         // std::cout << "inserting " << key << std::endl;
         std::unique_lock<std::timed_mutex> lock(tree_mutex);
-
-        if (key == 37302) {
-            std::cout << "inserting " << key << std::endl;
-        }
 
         // try fast path insertion if key is in the current fast path range
         if (can_use_fast_path(key)) {
@@ -142,7 +138,6 @@ public:
                 internal_insert(path, fast_path_min_key, fast_path_leaf_id);
             }
         }
-
         size++;
     }
 
@@ -191,7 +186,7 @@ public:
 
     // Print the tree structure (for debugging)
     void print(bool show_all_values = false) const {
-        // todo 暂时禁用锁以便调试
+        // todo lock not working?
         // std::unique_lock<std::mutex> lock(tree_mutex);
 
         std::cout << "B+Tree Structure:" << std::endl;
@@ -205,13 +200,12 @@ public:
             std::cout << "Leaf ID " << curr_id << ": [";
 
             if (show_all_values) {
-                // 显示所有键值对
+                // display all values
                 for (uint16_t i = 0; i < node.info->size; i++) {
                     std::cout << "(" << node.keys[i] << ":" << node.values[i] << ")";
                     if (i < node.info->size - 1) std::cout << ", ";
                 }
             } else {
-                // 只显示最小和最大值
                 if (node.info->size > 0) {
                     std::cout << "min=(" << node.keys[0] << ":" << node.values[0] << ")";
 
@@ -227,7 +221,7 @@ public:
 
             std::cout << "] ";
 
-            // 显示额外信息
+            // extra info
             std::cout << (node.info->isSorted ? "sorted" : "unsorted");
             if (curr_id == fast_path_leaf_id) std::cout << " (fast path)";
             std::cout << std::endl;
@@ -284,7 +278,6 @@ private:
         if (fast_path_leaf_id == INVALID_NODE_ID) {
             return false;
         }
-
         return key >= fast_path_min_key && key < fast_path_max_key;
     }
 
@@ -308,16 +301,15 @@ private:
         }
 
         // If we couldn't insert, we need to split the leaf
-        std::cout << "Before leaf split: " << std::endl;
-        print();
+        // std::cout << "Before leaf split: " << std::endl;
+        // print();
         path_t path;
         key_type leaf_max;
-        find_path_to_node(path, fast_path_leaf_id, leaf_max);
+        find_path_to_node(path, key, leaf_max);
 
         if (sort_policy == SORT_ON_SPLIT) {
             leaf.sort();
         }
-
 
         uint16_t index = leaf.value_slot(key);
         if (index < SPLIT_LEAF_POS) {// insert into old leaf
@@ -331,9 +323,9 @@ private:
             // std::cout << "Inserting: " << key << " to new leaf" << std::endl;
         }
         // todo
-        std::cout << "After leaf split: " << std::endl;
-        print();
-        std::cout << std::endl;
+        // std::cout << "After leaf split: " << std::endl;
+        // print();
+        // std::cout << std::endl;
 
         size++;
     }
@@ -375,97 +367,34 @@ private:
         }
     }
 
-    void find_path_to_node(path_t &path, node_id_t target_id, key_type &leaf_max) const {
+    void find_path_to_node(path_t &path, const key_type &key, key_type &leaf_max) const {
         // std::cout << "target: " << target_id << ", leaf max: " << leaf_max << std::endl;
         leaf_max = std::numeric_limits<key_type>::max();
+        path.reserve(height);
 
-        // 特殊情况：如果目标就是根节点，则路径为空
-        if (target_id == root_id) {
-            return;
-        }
+        node_id_t node_id = root_id;
+        node_t node(block_manager.open_block(node_id));
 
-        // 逐层查找目标节点
-        node_id_t curr_id = root_id;
-        node_t curr_node(block_manager.open_block(curr_id));
+        while (node.info->type == bp_node_type::INTERNAL) {
+            path.push_back(node_id);
 
-        // 创建一个集合记录已访问的节点，防止循环
-        std::unordered_set<node_id_t> visited;
-        while (curr_node.info->type == bp_node_type::INTERNAL) {
-            // std::cout << "cur id: " << std::endl;
-            // 防止循环
-            if (visited.find(curr_id) != visited.end()) {
-                throw std::runtime_error("Cycle detected in tree structure");
-            }
-            visited.insert(curr_id);
+            uint16_t slot = node.child_slot(key);
+            node_id = node.children[slot];
 
-            // 记录当前节点到路径
-            path.push_back(curr_id);
-
-            // 在子节点中搜索目标节点
-            for (uint16_t i = 0; i <= curr_node.info->size; i++) {
-                node_id_t child_id = curr_node.children[i];
-
-                // 如果找到目标，记录 leaf_max 并结束搜索
-                if (child_id == target_id) {
-                    if (i < curr_node.info->size) {
-                        leaf_max = curr_node.keys[i];
-                    }
-                    return;
-                }
-
-                // 尝试检查子节点
-                node_t child_node(block_manager.open_block(child_id));
-
-                // todo: 如果子节点是内部节点，我们需要继续搜索
-                if (child_node.info->type == bp_node_type::INTERNAL) {
-                    // 检查子树是否可能包含目标节点
-                    // 这里的逻辑需要基于你的树的结构，下面是一个简单的示例
-                    bool might_contain = false;
-
-                    // 检查所有子节点的子节点
-                    for (uint16_t j = 0; j <= child_node.info->size; j++) {
-                        if (child_node.children[j] == target_id) {
-                            might_contain = true;
-                            if (j < child_node.info->size) {
-                                leaf_max = std::min(leaf_max, child_node.keys[j]);
-                            }
-                            break;
-                        }
-                    }
-
-                    if (might_contain) {
-                        curr_id = child_id;
-                        curr_node = child_node;
-                        break;
-                    }
-                }
+            if (slot < node.info->size) {
+                leaf_max = node.keys[slot];
             }
 
-            // if path not found, throw exception
-            print();
-            std::cout << "target: " << target_id << std::endl;
-            throw std::runtime_error("Target node not found in tree1");
+            node.load(block_manager.open_block(node_id));
         }
 
-        // 如果我们结束循环但仍然没有到达目标节点的父节点，说明有问题
-        if (path.empty() || std::find(curr_node.children,
-                                      curr_node.children + curr_node.info->size + 1,
-                                      target_id) == curr_node.children + curr_node.info->size + 1) {
-            throw std::runtime_error("Target node not found in tree2");
-        }
     }
 
     // Split a leaf node during insertion
     void split_leaf(node_t &leaf, uint16_t index, const key_type &key,
                     const value_type &value, key_type &new_key, node_id_t &new_id) {
-        // todo: test
-        // 添加调试输出
-        // std::cout << "Splitting leaf at index " << index << " with key " << key << std::endl;
 
-        // 进行越界检查
-        if (index > leaf.info->size + 1) {
-            throw std::out_of_range("split_leaf: index out of bounds");
-        }
+        // std::cout << "Splitting leaf at index " << index << " with key " << key << std::endl;
 
         block_manager.mark_dirty(leaf.info->id);
 
@@ -593,8 +522,8 @@ private:
             }
 
             // Node is full, need to split it
-            std::cout << "Before internal split: " << std::endl;
-            print();
+            // std::cout << "Before internal split: " << std::endl;
+            // print();
 
             // Save original size
             uint16_t original_size = node.info->size;
@@ -688,12 +617,14 @@ private:
         // we need to create a new root
         create_new_root(key, child_id);
 
-        std::cout << "After internal split: " << std::endl;
-        print();
-        std::cout << std::endl;
+        // std::cout << "After internal split: " << std::endl;
+        // print();
+        // std::cout << std::endl;
     }
 
     // Create a new root when the height of the tree increases
+    // key: key that we want to elect to new node
+    // right_child_id: the right sub tree id of this key
     void create_new_root(const key_type &key, node_id_t right_child_id) {
         node_id_t left_child_id = block_manager.allocate();
 
@@ -745,19 +676,16 @@ private:
         while (true) {
             node_id_t node_id_to_sort;
             bool has_work = false; {
-                // 使用超时锁定以防止死锁
                 std::unique_lock<std::timed_mutex> lock(tree_mutex, std::chrono::milliseconds(100));
                 if (!lock.owns_lock()) {
                     std::cout << "background_sort_worker: failed to acquire lock" << std::endl;
                     continue;
                 }
 
-                // 立即检查是否需要停止线程
                 if (stop_background_thread) {
                     break;
                 }
 
-                // 如果队列非空，获取一个节点ID
                 if (!cold_nodes_queue.empty()) {
                     node_id_to_sort = cold_nodes_queue.front();
                     cold_nodes_queue.pop();
@@ -777,7 +705,6 @@ private:
                     std::cerr << "Error in background sort: " << e.what() << std::endl;
                 }
             } else {
-                // 如果没有工作，短暂休眠以避免CPU飙升
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
         }
@@ -795,13 +722,11 @@ private:
             std::cout << "Leaf ID " << node_id << ": [";
 
             if (show_all_values) {
-                // 显示所有键
                 for (uint16_t i = 0; i < node.info->size; i++) {
                     std::cout << node.keys[i];
                     if (i < node.info->size - 1) std::cout << ", ";
                 }
             } else {
-                // 只显示最小和最大值
                 if (node.info->size > 0) {
                     std::cout << "min=" << node.keys[0];
 
@@ -819,7 +744,6 @@ private:
             std::cout << "Internal ID " << node_id << ": [";
 
             if (show_all_values) {
-                // 显示所有键
                 for (uint16_t i = 0; i < node.info->size; i++) {
                     std::cout << node.keys[i];
                     if (i < node.info->size - 1) std::cout << ", ";
@@ -829,7 +753,6 @@ private:
                     std::cout << node.keys[i];
                     if (i < node.info->size - 1) std::cout << ", ";
                 }
-                // 只显示最小和最大值
                 // if (node.info->size > 0) {
                 //     std::cout << "min=" << node.keys[0];
                 //
@@ -844,7 +767,6 @@ private:
 
             std::cout << "]" << std::endl;
 
-            // 递归打印子节点
             for (uint16_t i = 0; i <= node.info->size; i++) {
                 print_node(node.children[i], level + 1, show_all_values);
             }

@@ -240,11 +240,13 @@ public:
 
     // Check if the node is nearly full (e.g., 90% capacity)
     bool is_nearly_full() const {
-        if (info->type == bp_node_type::LEAF) {
-            return info->size >= (leaf_capacity * 0.9);
-        } else {
-            return info->size >= (internal_capacity * 0.9);
-        }
+        // currently only leaf uses this function
+        return info->size >= (leaf_capacity * 0.9);
+        // if (info->type == bp_node_type::LEAF) {
+        //     return info->size >= (leaf_capacity * 0.9);
+        // } else {
+        //     return info->size >= (internal_capacity * 0.9);
+        // }
     }
 
     // Mark this node as a "cold" node (not in fast path)

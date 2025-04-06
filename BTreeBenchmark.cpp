@@ -472,23 +472,23 @@ int main(int argc, char* argv[]) {
     }
 
     // Define sortedness levels to test
-    // std::vector<double> sortednessLevels = {
-    //     1.0,   // Fully sorted
-    //     0.99,  // 99% sorted
-    //     0.95,  // 95% sorted
-    //     0.9,   // 90% sorted
-    //     0.8,   // 80% sorted
-    //     0.7,   // 70% sorted
-    //     0.5,   // 50% sorted
-    //     0.3,   // 30% sorted
-    //     0.1,   // 10% sorted
-    //     0.0    // Completely random
-    // };
-
     std::vector<double> sortednessLevels = {
         1.0,   // Fully sorted
+        0.99,  // 99% sorted
+        0.95,  // 95% sorted
+        0.9,   // 90% sorted
+        0.8,   // 80% sorted
+        0.7,   // 70% sorted
+        0.5,   // 50% sorted
+        0.3,   // 30% sorted
+        0.1,   // 10% sorted
         0.0    // Completely random
     };
+
+    // std::vector<double> sortednessLevels = {
+    //     1.0,   // Fully sorted
+    //     0.0    // Completely random
+    // };
 
     // Create and run benchmark
     BTreeBenchmark benchmark;
