@@ -1,7 +1,3 @@
-//
-// Created by Kelly Yan on 4/1/25.
-//
-
 #ifndef NODETYPES_HPP
 #define NODETYPES_HPP
 

@@ -13,6 +13,11 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/trees)
 # Benchmark executable
 add_executable(BPlusTreeOpti
         BTreeBenchmark.cpp
+        trees/Tuple.hpp
+        trees/Types.hpp
+        trees/LeafNode.hpp
+        trees/InternalNode.hpp
+        trees/LeafNodeLSM.hpp
 )
 
 # Test executable

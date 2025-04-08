@@ -187,7 +187,7 @@ struct PerformanceMetrics {
 // Benchmark class
 class BTreeBenchmark {
 public:
-    BTreeBenchmark(size_t blockSize = 4096, size_t blockCount = 1000000)
+    BTreeBenchmark(size_t blockSize = 4096, size_t blockCount = 50)
         : blockManager(blockCount) {
         std::cout << "Block size: " << blockSize << " bytes\n";
         std::cout << "Max blocks: " << blockCount << "\n";
