@@ -9,4 +9,9 @@ enum bp_node_type {
     INTERNAL // 1
 };
 
+// Shared base header to access `type` without knowing actual node structure
+struct BaseHeader {
+    uint16_t type;
+};
+
 #endif //NODETYPES_HPP

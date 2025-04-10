@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <unordered_set>
 #include "NodeTypes.hpp"
+#include "PageLayout.hpp"
 #include "Tuple.hpp"
 
 using namespace db;
@@ -16,9 +17,8 @@ using namespace db;
  */
 template <typename node_id_type, typename key_type, size_t block_size>
 class LeafNodeLSM {
-private:
+public:
     static constexpr size_t BLOCK_SIZE = block_size;
-    static constexpr size_t HEADER_SIZE = 16;
     static constexpr size_t MAX_SLOTS = 256;
 
     enum class OpType : uint8_t {
@@ -31,12 +31,6 @@ private:
         uint16_t length;
     };
 
-    struct node_info {
-        node_id_type id;
-        uint16_t size;
-        uint16_t type; // 0 = leaf
-    };
-
     struct leaf_info {
         node_id_type next_id;
         bool isSorted;
@@ -44,40 +38,37 @@ private:
     };
 
     struct PageHeader {
-        node_info info;
+        node_id_type id; // node id
+        uint16_t size; // number of tuples
         leaf_info meta;
         size_t slot_count;
     };
     enum SplitPolicy {QUICK_PARTITION, SORT_ON_SPLIT};
 
-    uint8_t* buffer;
+    using key_type = field_t;
+    using Layout = PageLayout<BaseHeader, PageHeader, Slot, MAX_SLOTS, block_size>;
+
+    uint8_t* buffer{};
     const TupleDesc& td;
-    size_t key_index;
+    size_t key_index{};
     SplitPolicy split_strategy;
+    Layout layout;
 
-
-    PageHeader* header;
-    Slot* slots;
-    size_t* heap_end;
-    uint8_t* heap_base;
-
-public:
     LeafNodeLSM() = default;
 
-    LeafNodeLSM(void* data, TupleDesc& desc, size_t key, SplitPolicy policy)
-        : buffer(reinterpret_cast<uint8_t*>(data)), td(desc), key_index(key), split_strategy(policy) {
-        header = reinterpret_cast<PageHeader*>(buffer);
-        slots = reinterpret_cast<Slot*>(buffer + sizeof(PageHeader));
-        heap_end = reinterpret_cast<size_t*>(buffer + HEADER_SIZE + sizeof(Slot) * MAX_SLOTS);
-        heap_base = buffer + BLOCK_SIZE;
-    }
-
-    node_id_type get_id() {
-        return header->info.id;
-    }
-
-    uint16_t get_size() {
-        return header->info.size;
+    LeafNodeLSM(void* data, TupleDesc& desc, size_t key, node_id_type id, SplitPolicy policy,  node_id_type next_id, bool isCold)
+        : buffer(reinterpret_cast<uint8_t*>(data)),
+    td(desc),
+    key_index(key),
+    split_strategy(policy) {
+        layout.base_header->type = 0;
+        layout.page_header->id = id;
+        layout.page_header->size = 0;
+        layout.page_header->meta.next_id = next_id;
+        layout.page_header->meta.isCold = isCold;
+        layout.page_header->slot_count = 0;
+        layout.page_header->meta = {0, false, false};
+        layout.heap_end[0] = block_size;
     }
 
     size_t free_space() const {
@@ -95,37 +86,43 @@ public:
         const size_t len = td.length(t) + sizeof(OpType);
         if (free_space() < len + sizeof(Slot)) return false;
 
-        *heap_end -= len;
-        buffer[*heap_end] = static_cast<uint8_t>(OpType::Insert);
-        td.serialize(buffer + *heap_end + sizeof(OpType), t);
+        *layout.heap_end -= len;
+        buffer[*layout.heap_end] = static_cast<uint8_t>(OpType::Insert);
+        td.serialize(buffer + *layout.heap_end + sizeof(OpType), t);
 
-        slots[header->slot_count++] = { static_cast<uint16_t>(*heap_end), static_cast<uint16_t>(len) };
-        ++header->info.size;
+        layout.slots[layout.page_header->slot_count++] = {
+            static_cast<uint16_t>(*layout.heap_end),
+            static_cast<uint16_t>(len)
+        };
+        ++layout.page_header->size;
         return true;
     }
 
     // Append a delete marker
     bool erase(const key_type& key) {
-        const size_t len = sizeof(OpType) + td.length(Tuple(td.size())); // fake tuple just for length
-        if (free_space() < len + sizeof(Slot)) return false;
-
         Tuple tombstone(td.size());
         // Fill only key field (others don't matter)
         tombstone.set_field(key_index, key);
 
-        *heap_end -= len;
-        buffer[*heap_end] = static_cast<uint8_t>(OpType::Delete);
-        td.serialize(buffer + *heap_end + sizeof(OpType), tombstone);
+        const size_t len = td.length(tombstone) + sizeof(OpType);
+        if (free_space() < len + sizeof(Slot)) return false;
 
-        slots[header->slot_count++] = { static_cast<uint16_t>(*heap_end), static_cast<uint16_t>(len) };
-        ++header->info.size;
+        *layout.heap_end -= len;
+        buffer[*layout.heap_end] = static_cast<uint8_t>(OpType::Delete);
+        td.serialize(buffer + *layout.heap_end + sizeof(OpType), tombstone);
+
+        layout.slots[layout.page_header->slot_count++] = {
+            static_cast<uint16_t>(*layout.heap_end),
+            static_cast<uint16_t>(len)
+        };
+        ++layout.page_header->size;
         return true;
     }
 
     // Find the most recent value for key (or tombstone)
     std::optional<Tuple> get(const key_type& key) const {
-        for (int i = static_cast<int>(header->slot_count) - 1; i >= 0; --i) {
-            const Slot& slot = slots[i];
+        for (int i = static_cast<int>(layout.page_header->slot_count) - 1; i >= 0; --i) {
+            const Slot& slot = layout.slots[i];
             OpType op = static_cast<OpType>(buffer[slot.offset]);
             Tuple t = td.deserialize(buffer + slot.offset + sizeof(OpType));
             if (extract_key(t) == key) {
@@ -144,8 +141,8 @@ public:
         std::vector<Tuple> compacted;
         std::unordered_set<key_type> tombstones;
 
-        for (int i = header->slot_count - 1; i >= 0; --i) {
-            const Slot& slot = slots[i];
+        for (int i = layout.page_header->slot_count - 1; i >= 0; --i) {
+            const Slot& slot = layout.slots[i];
             OpType op = static_cast<OpType>(buffer[slot.offset]);
             Tuple t = td.deserialize(buffer + slot.offset + sizeof(OpType));
             key_type k = extract_key(t);
@@ -153,7 +150,7 @@ public:
             if (op == OpType::Delete) {
                 tombstones.insert(k);
             } else if (!tombstones.contains(k)) {
-                tombstones.insert(k); // 只保留最靠后的 insert
+                tombstones.insert(k);
                 compacted.push_back(t);
             }
         }
@@ -174,9 +171,9 @@ public:
         std::vector<Tuple> compacted = compact();
 
         // Before re-inserting into old page, clear all records
-        header->slot_count = 0;
-        *heap_end = BLOCK_SIZE;
-        header->info.size = 0;
+        layout.page_header->slot_count = 0;
+        *layout.heap_end = BLOCK_SIZE;
+        layout.page_header->size = 0;
 
         // split
         if (split_strategy == SplitPolicy::QUICK_PARTITION) {
@@ -198,28 +195,24 @@ public:
             for (size_t i = 0; i < half; ++i) insert(compacted[i]);
             for (size_t i = half; i < compacted.size(); ++i) new_leaf.insert(compacted[i]);
         }
-        new_leaf.header->meta.next_id = this->header->meta.next_id;
-        this->header->meta.next_id = new_leaf.header->info.id;
+        // restore linked list
+        new_leaf.layout.page_header->meta.next_id = layout.page_header->meta.next_id;
+        layout.page_header->meta.next_id = new_leaf.layout.page_header->id;
 
-        return { new_leaf.min_key(), new_leaf.header->info.id };
+        return { new_leaf.min_key(), new_leaf.layout.page_header->info.id };
     }
 
     key_type min_key() const {
         std::optional<key_type> min;
 
-        for (int i = static_cast<int>(header->slot_count) - 1; i >= 0; --i) {
-            const Slot& slot = slots[i];
+        for (int i = static_cast<int>(layout.page_header->slot_count) - 1; i >= 0; --i) {
+            const Slot& slot = layout.slots[i];
             OpType op = static_cast<OpType>(buffer[slot.offset]);
             if (op == OpType::Delete) continue;
-
             Tuple t = td.deserialize(buffer + slot.offset + sizeof(OpType));
             key_type k = extract_key(t);
-
-            if (!min.has_value() || k < min.value()) {
-                min = k;
-            }
+            if (!min.has_value() || k < min.value()) min = k;
         }
-
         if (!min.has_value()) throw std::runtime_error("Empty node");
         return min.value();
     }
@@ -228,19 +221,14 @@ public:
     key_type max_key() const {
         std::optional<key_type> max;
 
-        for (int i = static_cast<int>(header->slot_count) - 1; i >= 0; --i) {
-            const Slot& slot = slots[i];
+        for (int i = static_cast<int>(layout.page_header->slot_count) - 1; i >= 0; --i) {
+            const Slot& slot = layout.slots[i];
             OpType op = static_cast<OpType>(buffer[slot.offset]);
             if (op == OpType::Delete) continue;
-
             Tuple t = td.deserialize(buffer + slot.offset + sizeof(OpType));
             key_type k = extract_key(t);
-
-            if (!max.has_value() || k > max.value()) {
-                max = k;
-            }
+            if (!max.has_value() || k > max.value()) max = k;
         }
-
         if (!max.has_value()) throw std::runtime_error("Empty node");
         return max.value();
     }

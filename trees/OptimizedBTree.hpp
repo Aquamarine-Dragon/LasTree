@@ -251,7 +251,7 @@ private:
     node_id_t head_id;
     const TupleDesc td; // tuple schema of this page
     size_t key_index; // index of key in each tuple
-    size_t numPages;
+    size_t numPages; // keep track of current pages
 
     // Fast path tracking
     node_id_t fast_path_leaf_id;
@@ -422,7 +422,7 @@ private:
             uint16_t original_size = node.info->size;
 
             node_id_t new_node_id = block_manager.allocate();
-            node_t new_node(block_manager.open_block(new_node_id), bp_node_type::INTERNAL);
+            internal_t new_node(block_manager.open_block(new_node_id), bp_node_type::INTERNAL);
             block_manager.mark_dirty(new_node_id);
 
             // Prepare split position
@@ -432,7 +432,7 @@ private:
             node.info->next_id = new_node_id;
 
             // update node sizes
-            new_node.info->size = node_t::internal_capacity - split_pos - 1; // new node get latter half keys
+            new_node.info->size = internal_t::internal_capacity - split_pos - 1; // new node get latter half keys
             node.info->size = split_pos; // original node get first half keys
 
             // Handle the split based on where the new key goes
@@ -522,10 +522,10 @@ private:
         node_id_t left_child_id = block_manager.allocate();
 
         // Get current root
-        node_t old_root(block_manager.open_block(root_id));
+        internal_t old_root(block_manager.open_block(root_id));
 
         // Create new left child by copying current root
-        node_t left_child(block_manager.open_block(left_child_id), static_cast<bp_node_type>(old_root.info->type));
+        internal_t left_child(block_manager.open_block(left_child_id), static_cast<bp_node_type>(old_root.info->type));
         block_manager.mark_dirty(left_child_id);
 
         // Copy contents of old root to left child
@@ -588,15 +588,15 @@ private:
 
             // Sort the cold node in the background
             if (has_work) {
-                try {
-                    node_t node(block_manager.open_block(node_id_to_sort));
-                    if (!node.info->isSorted) {
-                        block_manager.mark_dirty(node_id_to_sort);
-                        node.sort();
-                    }
-                } catch (const std::exception &e) {
-                    std::cerr << "Error in background sort: " << e.what() << std::endl;
-                }
+                // try {
+                //     node_t node(block_manager.open_block(node_id_to_sort));
+                //     if (!node.info->isSorted) {
+                //         block_manager.mark_dirty(node_id_to_sort);
+                //         node.sort();
+                //     }
+                // } catch (const std::exception &e) {
+                //     std::cerr << "Error in background sort: " << e.what() << std::endl;
+                // }
             } else {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
@@ -609,9 +609,10 @@ private:
             std::cout << "  ";
         }
 
-        node_t node(block_manager.open_block(node_id));
+        void* raw = block_manager.open_block(node_id);
+        auto* header = reinterpret_cast<typename internal_t::PageHeader*>(raw);
 
-        if (node.info->type == bp_node_type::LEAF) {
+        if (header->type == bp_node_type::LEAF) {
             std::cout << "Leaf ID " << node_id << ": [";
 
             if (show_all_values) {

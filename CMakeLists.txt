@@ -18,6 +18,7 @@ add_executable(BPlusTreeOpti
         trees/LeafNode.hpp
         trees/InternalNode.hpp
         trees/LeafNodeLSM.hpp
+        trees/PageLayout.hpp
 )
 
 # Test executable
