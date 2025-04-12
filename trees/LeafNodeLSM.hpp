@@ -45,7 +45,6 @@ public:
     };
     enum SplitPolicy {QUICK_PARTITION, SORT_ON_SPLIT};
 
-    using key_type = field_t;
     using Layout = PageLayout<BaseHeader, PageHeader, Slot, MAX_SLOTS, block_size>;
 
     uint8_t* buffer{};
@@ -55,6 +54,13 @@ public:
     Layout layout;
 
     LeafNodeLSM() = default;
+
+    // constructor that loads from an existing buffer
+    explicit LeafNodeLSM(void *buffer, const TupleDesc &td, size_t key_index)
+        : td(td),
+          key_index(key_index) {
+        load(buffer);
+    }
 
     LeafNodeLSM(void* data, TupleDesc& desc, size_t key, node_id_type id, SplitPolicy policy,  node_id_type next_id, bool isCold)
         : buffer(reinterpret_cast<uint8_t*>(data)),
@@ -71,10 +77,14 @@ public:
         layout.heap_end[0] = block_size;
     }
 
+    // Load node from an existing memory block
+    void load(void *buf) {
+        buffer = reinterpret_cast<uint8_t *>(buf);
+        layout = Layout(buffer);
+    }
+
     size_t free_space() const {
-        size_t slot_bytes = sizeof(Slot) * header->slot_count;
-        size_t used_heap = BLOCK_SIZE - *heap_end;
-        return BLOCK_SIZE - HEADER_SIZE - slot_bytes - used_heap;
+        return layout.free_space();
     }
 
     key_type extract_key(const Tuple& t) const {
@@ -96,6 +106,10 @@ public:
         };
         ++layout.page_header->size;
         return true;
+    }
+
+    bool update(const Tuple& t) {
+        return insert(t); // Simply append a new version
     }
 
     // Append a delete marker

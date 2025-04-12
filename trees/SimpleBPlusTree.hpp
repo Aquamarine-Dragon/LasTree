@@ -13,16 +13,17 @@
 
 #include "NodeTypes.hpp"
 #include "BasicBTreeNode.hpp"
-#include "MemoryBlockManager.hpp"
+#include "BufferPool.hpp"
+#include "Types.hpp"
 
 // SimpleBPlusTree - Basic B+tree implementation using memory blocks
-template <typename key_type, typename value_type>
-class SimpleBPlusTree {
+template <typename key_type, typename value_type, template <size_t> class BufferPoolType>
+class SimpleBPlusTree : public BaseFile {
 public:
     // Type aliases for readability
     using node_id_t = uint32_t;
-    using BlockManager = InMemoryBlockManager<node_id_t>;
-    using node_t = BasicBTreeNode<node_id_t, key_type, value_type, BlockManager::block_size>;
+    using node_t = BasicBTreeNode<node_id_t, key_type, value_type, db::DEFAULT_PAGE_SIZE>;
+    using buffer_pool_t = BufferPoolType<DEFAULT_PAGE_SIZE>;
     using path_t = std::vector<node_id_t>;
     
     // Constants
@@ -32,24 +33,24 @@ public:
     static constexpr uint16_t SPLIT_LEAF_POS = (node_t::leaf_capacity + 1) / 2;
     static constexpr node_id_t INVALID_NODE_ID = std::numeric_limits<node_id_t>::max();
     
-    // Constructor initializes the tree with an empty root
-    explicit SimpleBPlusTree(BlockManager& manager)
-        : block_manager(manager),
-          root_id(manager.allocate()),
-          head_id(manager.allocate()),
-          height(1),
-          size(0) {
-        
-        // Initialize leaf node
-        node_t leaf(manager.open_block(head_id), bp_node_type::LEAF);
-        block_manager.mark_dirty(head_id);
+    explicit SimpleBPlusTree(buffer_pool_t &buffer_pool,  const std::string& filename)
+        : BaseFile(filename), buffer_pool(buffer_pool) {
+        // Allocate leaf node
+        head_id = num_pages.fetch_add(1);
+        PageId leaf_pid{filename, head_id};
+        Page& leaf_page = buffer_pool.get_mut_block(leaf_pid);
+        node_t leaf(leaf_page.data(), bp_node_type::LEAF);
+        buffer_pool.mark_dirty(leaf_pid);
         leaf.info->id = head_id;
         leaf.info->next_id = INVALID_NODE_ID;
         leaf.info->size = 0;
-        
-        // Initialize root node (internal node pointing to the leaf)
-        node_t root(manager.open_block(root_id), bp_node_type::INTERNAL);
-        block_manager.mark_dirty(root_id);
+
+        // Allocate root node
+        root_id = num_pages.fetch_add(1);
+        PageId root_pid{filename, root_id};
+        Page& root_page = buffer_pool.get_mut_block(root_pid);
+        node_t root(root_page.data(), bp_node_type::INTERNAL);
+        buffer_pool.mark_dirty(root_pid);
         root.info->id = root_id;
         root.info->next_id = INVALID_NODE_ID;
         root.info->size = 0;
@@ -57,7 +58,7 @@ public:
     }
     
     // Insert a key-value pair into the tree
-    void insert(const key_type& key, const value_type& value) {
+    void insert(const Tuple &tuple) {
         // Find the leaf node where the key belongs
         node_t leaf;
         path_t path;
@@ -149,29 +150,33 @@ public:
     }
     
 private:
-    // Memory manager for allocating and tracking node blocks
-    BlockManager& block_manager;
+    buffer_pool_t buffer_pool;
     
     // Tree structure identifiers
+    std::atomic<node_id_t> num_pages{0};
     node_id_t root_id;
     node_id_t head_id;
     
     // Tree metrics
-    uint8_t height;
-    size_t size;
-    
+    uint8_t height = 1;
+    size_t size = 0;
+
     // Find the leaf node that should contain the given key
     void find_leaf(node_t& node, const key_type& key) const {
         node_id_t node_id = root_id;
-        node.load(block_manager.open_block(node_id));
-        
-        // Traverse the tree from root to leaf
+        PageId pid{filename, node_id};
+        Page& page = buffer_pool.get_mut_block(pid);
+        node.load(page.data());
+
         while (node.info->type == bp_node_type::INTERNAL) {
             uint16_t slot = node.child_slot(key);
             node_id = node.children[slot];
-            node.load(block_manager.open_block(node_id));
+            pid = {filename, node_id};
+            Page& page2 = buffer_pool.get_mut_block(pid);
+            node.load(page2.data());
         }
     }
+
     
     // Find the leaf and collect the path from root to leaf
     void find_leaf_with_path(node_t& node, path_t& path, const key_type& key) const {

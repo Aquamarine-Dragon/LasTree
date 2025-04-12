@@ -19,6 +19,9 @@ add_executable(BPlusTreeOpti
         trees/InternalNode.hpp
         trees/LeafNodeLSM.hpp
         trees/PageLayout.hpp
+        trees/BufferPool.hpp
+        trees/Database.hpp
+        trees/BaseFile.hpp
 )
 
 # Test executable
