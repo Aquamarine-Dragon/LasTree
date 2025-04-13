@@ -32,9 +32,16 @@ private:
             return slot;
         }
 
-        // evict from LRU
+        // flush or evict from LRU
         size_t slot = lru.back();
-        const PageId& old_id = slot_to_id[slot];
+        lru.pop_back();
+        if (!slot_to_id.contains(slot)) {
+            throw std::runtime_error("fetch_slot: slot not found in slot_to_id!");
+        }
+        const PageId& old_id = slot_to_id.at(slot);
+        if (dirty_slots.contains(slot)) {
+            flush(old_id);
+        }
         evict(old_id);
         return slot;
     }
@@ -50,13 +57,17 @@ public:
         std::iota(free_list.rbegin(), free_list.rend(), 0);
     }
 
+    ~BufferPool() {
+        flush_all();
+    }
+
     // Read-only view
     const Page& get_page(const PageId& id) {
-        return get_mut_block(id); // reuse logic
+        return get_mut_page(id); // reuse logic
     }
 
     // Writable view
-    Page& get_mut_block(const PageId& pid) {
+    Page& get_mut_page(const PageId& pid) {
         // Case 1: already in buffer
         if (pid_to_slot.contains(pid)) {
             size_t slot = pid_to_slot.at(pid);
@@ -66,40 +77,50 @@ public:
 
         // Case 2: allocate from free list or evict
         size_t slot = fetch_slot();
+        Page &page = pages[slot];
+
+        getDatabase().get(pid.file).readPage(page, pid.page);
         pid_to_slot[pid] = slot;
         slot_to_id[slot] = pid;
-
-        // Load from disk
-        Page &page = pages[slot];
-        getDatabase().get(pid.file).readPage(page, pid.page);
 
         lru.push_front(slot);
         slot_lru_map[slot] = lru.begin();
 
-        return pages[slot];
+        return page;
     }
 
     void mark_dirty(const PageId& id) {
+        if (!pid_to_slot.contains(id)) {
+            throw std::runtime_error("mark_dirty: PageId not found in pid_to_slot!");
+        }
         size_t slot = pid_to_slot.at(id);
         dirty_slots.insert(slot);
     }
 
     void flush(const PageId& id) {
+        if (!pid_to_slot.contains(id)) {
+            throw std::runtime_error("flush: PageId not found in pid_to_slot!");
+        }
         size_t slot = pid_to_slot.at(id);
         if (!dirty_slots.contains(slot)) return;
-        write_block_to_disk(id, pages[slot]);
+        const Page &page = pages[slot];
+        getDatabase().get(id.file).writePage(page, id.page);
         dirty_slots.erase(slot);
     }
 
     void flush_all() {
-        for (size_t slot : dirty_slots) {
-            const PageId& id = slot_to_id[slot];
-            write_block_to_disk(id, pages[slot]);
+        for (const size_t &slot : dirty_slots) {
+            const Page &page = pages[slot];
+            const PageId &pid = slot_to_id.at(slot);
+            getDatabase().get(pid.file).writePage(page, pid.page);
         }
         dirty_slots.clear();
     }
 
     void evict(const PageId& id) {
+         if (!pid_to_slot.contains(id)) {
+            throw std::runtime_error("evict: PageId not found in pid_to_slot!");
+        }
         size_t slot = pid_to_slot.at(id);
         flush(id);
         pid_to_slot.erase(id);

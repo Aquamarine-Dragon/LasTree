@@ -38,10 +38,9 @@ public:
         size_t slot_count;
     };
 
-    using key_type = field_t;
     using Layout = PageLayout<BaseHeader, PageHeader, Slot, MAX_SLOTS, block_size>;
 
-    uint8_t *buffer{}; // address of the page that stores this page
+    uint8_t *buffer; // address of the page that stores this page
     const TupleDesc &td; // tuple schema of this page
     size_t key_index{}; // index of key in each tuple
     Layout layout;
@@ -49,16 +48,18 @@ public:
     LeafNode() = default;
 
     // constructor that loads from an existing buffer
-    explicit LeafNode(void *buffer, const TupleDesc &td, size_t key_index)
-        : td(td),
+    explicit LeafNode(Page &page, const TupleDesc &td, size_t key_index)
+        : buffer(page.data()),
+          layout(buffer),
+          td(td),
           key_index(key_index) {
-        load(buffer);
     }
 
     // constructor: divide page into multiples parts
-    LeafNode(void *data, const TupleDesc &desc, size_t key, node_id_type id, node_id_type next_id, bool sorted,
+    LeafNode(Page &page, const TupleDesc &desc, size_t key, node_id_type id, node_id_type next_id, bool sorted,
              bool isCold)
-        : buffer(reinterpret_cast<uint8_t *>(data)),
+        : buffer(page.data()),
+          layout(Layout(buffer)),
           td(desc),
           key_index(key) {
         layout.base_header->type = 0;
@@ -69,12 +70,6 @@ public:
         layout.page_header->size = 0;
         layout.page_header->slot_count = 0;
         layout.heap_end[0] = block_size; // heap grows down
-    }
-
-    // Load node from an existing memory block
-    void load(void *buf) {
-        buffer = reinterpret_cast<uint8_t *>(buf);
-        layout = Layout(buffer);
     }
 
     node_id_type get_id() {
@@ -90,7 +85,7 @@ public:
     }
 
     key_type extract_key(const Tuple &t) const {
-        return t.get_field(key_index);
+        return std::get<key_type>(t.get_field(key_index));
     }
 
     // Binary search based on keys in slots
@@ -150,16 +145,16 @@ public:
 
         layout.slots[insert_pos] = {static_cast<uint16_t>(*layout.heap_end), static_cast<uint16_t>(len), true};
         ++(layout.page_header->slot_count);
-        ++layout.page_header->info.size;
+        ++layout.page_header->size;
         return true;
     }
 
-    bool update(const Tuple& t) {
+    bool update(const Tuple &t) {
         key_type key = extract_key(t);
         uint16_t index = value_slot(key);
 
         if (index < layout.page_header->slot_count) {
-            const Slot& slot = layout.slots[index];
+            const Slot &slot = layout.slots[index];
             if (slot.valid) {
                 Tuple existing = td.deserialize(buffer + slot.offset);
                 if (extract_key(existing) == key) {
@@ -198,16 +193,15 @@ public:
             Tuple t = td.deserialize(buffer + slot.offset);
             new_leaf.insert(t);
             layout.slots[j].valid = false;
-            --layout.page_header->info.size;
+            --layout.page_header->size;
         }
 
         // update next pointers
         new_leaf.layout.page_header->meta.next_id = layout.page_header->meta.next_id;
         layout.page_header->meta.next_id = new_leaf.layout.page_header->meta.next_id;
 
-        return {new_leaf.min_key(), new_leaf.layout.page_header->info.id};
+        return {new_leaf.min_key(), new_leaf.layout.page_header->id};
     }
-
 
     bool is_nearly_full() const {
         return free_space() < 0.1 * block_size;

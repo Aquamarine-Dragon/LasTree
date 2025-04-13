@@ -6,6 +6,8 @@
 #include <stdexcept>
 #include "NodeTypes.hpp"
 
+using namespace db;
+
 template <typename node_id_type, typename key_type, size_t block_size>
 class InternalNode {
 private:
@@ -15,6 +17,7 @@ private:
     };
 
 public:
+    uint8_t *buffer; // address of the page that stores this page
     BaseHeader* base_header;
     PageHeader* header;
     key_type* keys;
@@ -23,12 +26,12 @@ public:
 
     InternalNode() = default;
 
-    explicit InternalNode(void* buf) {
-        load(buf);
+    explicit InternalNode(Page &page) {
+        load(page);
     }
 
-    InternalNode(void* buf, node_id_type id){
-        base_header = static_cast<BaseHeader*>(buf);
+    InternalNode(Page &page,  node_id_type id) : buffer(page.data()){
+        base_header = reinterpret_cast<BaseHeader*>(buffer);
         header = reinterpret_cast<PageHeader*>(base_header + 1);
         base_header->type = 1;
         header->id = id;
@@ -37,8 +40,9 @@ public:
         children = reinterpret_cast<node_id_type*>(keys + internal_capacity);
     }
 
-    void load(void* buf) {
-        base_header = static_cast<BaseHeader*>(buf);
+    void load(Page &page){
+        buffer = page.data();
+        base_header = reinterpret_cast<BaseHeader*>(buffer);
         header = reinterpret_cast<PageHeader*>(base_header + 1);
         keys = reinterpret_cast<key_type*>(header + 1);
         children = reinterpret_cast<node_id_type*>(keys + internal_capacity);
@@ -49,5 +53,12 @@ public:
         auto it = std::upper_bound(keys, keys + header->size, key);
         return std::distance(keys, it);
     }
+
+    void copyInfoFrom(const InternalNode& other) {
+        this->header->size = other.header->size;
+        std::memcpy(this->keys, other.keys, other.header->size * sizeof(key_type));
+        std::memcpy(this->children, other.children, (other.header->size + 1) * sizeof(node_id_type));
+    }
+
 };
 

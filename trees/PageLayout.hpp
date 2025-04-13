@@ -34,8 +34,6 @@ public:
         return reinterpret_cast<size_t>(heap_end[0]) - (reinterpret_cast<size_t>(tuple_data_start()) - reinterpret_cast<size_t>(buffer));
     }
 
-
-
 private:
     uint8_t* buffer;
 };

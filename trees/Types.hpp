@@ -22,17 +22,23 @@ namespace db {
         size_t page;
 
     public:
-        bool operator==(const PageId &) const = default;
+        bool operator==(const PageId& other) const {
+            return file == other.file && page == other.page;
+        }
     };
+
+    enum SplitPolicy {QUICK_PARTITION, SORT};
 
     constexpr size_t DEFAULT_PAGE_SIZE = 4096;
 
     using Page = std::array<uint8_t, DEFAULT_PAGE_SIZE>;
 } // namespace db
 
-template<>
-struct std::hash<const db::PageId> {
-    std::size_t operator()(const db::PageId &r) const {
-        return std::hash<std::string>()(r.file) ^ std::hash<size_t>()(r.page);
-    }
-};
+namespace std {
+    template<>
+    struct hash<db::PageId> {
+        std::size_t operator()(const db::PageId &r) const {
+            return std::hash<std::string>()(r.file) ^ (std::hash<size_t>()(r.page) << 1);
+        }
+    };
+}

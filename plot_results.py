@@ -1,87 +1,40 @@
-#!/usr/bin/env python3
 import pandas as pd
 import matplotlib.pyplot as plt
-import numpy as np
-import sys
 
-# Check if CSV file is provided as argument
-csv_file = "build/btree_benchmark_results.csv"
-if len(sys.argv) > 1:
-    csv_file = sys.argv[1]
+# Load CSV data
+csv_file = "build/btree_benchmark_results.csv"  # Set default path
+data = pd.read_csv(csv_file)
 
-# Load the data
-try:
-    data = pd.read_csv(csv_file)
-except FileNotFoundError:
-    print(f"Error: Could not find {csv_file}")
-    print("Run the benchmark first to generate results.")
-    sys.exit(1)
-
-# Convert sortedness to percentage for display
+# Add derived column for display
 data['Sortedness_Percent'] = data['Sortedness'] * 100
 
-# Create figure and subplots
-plt.figure(figsize=(12, 10))
+# Plot metric vs. sortedness for each read ratio and tree type
+def plot_metric_by_read_ratio(data, metric, ylabel, title, filename):
+    read_ratios = sorted(data['ReadRatio'].unique())
+    tree_types = sorted(data['TreeType'].unique())
 
-# Plot 1: Insert Time Comparison
-plt.subplot(2, 2, 1)
-plt.plot(data['Sortedness_Percent'], data['SimpleInsertTime'], 'b-o', label='Simple B+Tree')
-plt.plot(data['Sortedness_Percent'], data['OptimizedInsertTime'], 'r-s', label='Optimized B+Tree')
-plt.xlabel('Sortedness (%)')
-plt.ylabel('Insert Time (ms)')
-plt.title('Insert Performance vs. Sortedness')
-plt.legend()
-plt.grid(True)
-plt.ylim(bottom=0)  # Start y-axis at 0
+    plt.figure(figsize=(12, 4 * len(read_ratios)))
 
-# Plot 2: Search Time Comparison
-plt.subplot(2, 2, 2)
-plt.plot(data['Sortedness_Percent'], data['SimpleSearchTime'], 'b-o', label='Simple B+Tree')
-plt.plot(data['Sortedness_Percent'], data['OptimizedSearchTime'], 'r-s', label='Optimized B+Tree')
-plt.xlabel('Sortedness (%)')
-plt.ylabel('Search Time (ms)')
-plt.title('Search Performance vs. Sortedness')
-plt.legend()
-plt.grid(True)
-plt.ylim(bottom=0)  # Start y-axis at 0
+    for i, ratio in enumerate(read_ratios, 1):
+        plt.subplot(len(read_ratios), 1, i)
+        for tree in tree_types:
+            subset = data[(data['ReadRatio'] == ratio) & (data['TreeType'] == tree)]
+            plt.plot(subset['Sortedness_Percent'], subset[metric], marker='o', label=tree)
+        plt.title(f"{title} (ReadRatio={ratio:.1f})")
+        plt.xlabel('Sortedness (%)')
+        plt.ylabel(ylabel)
+        plt.grid(True)
+        plt.legend()
 
-# Plot 3: Speedup
-plt.subplot(2, 2, 3)
-plt.plot(data['Sortedness_Percent'], data['InsertSpeedup'], 'g-o', label='Insert Speedup')
-plt.plot(data['Sortedness_Percent'], data['SearchSpeedup'], 'm-s', label='Search Speedup')
-plt.axhline(y=1.0, color='k', linestyle='--', alpha=0.7)  # Reference line for no speedup
-plt.xlabel('Sortedness (%)')
-plt.ylabel('Speedup Factor')
-plt.title('Performance Speedup vs. Sortedness')
-plt.legend()
-plt.grid(True)
-plt.ylim(bottom=0)  # Start y-axis at 0
+    plt.tight_layout()
+    plt.savefig(filename)
+    print(f"Saved plot to: {filename}")
+    plt.show()
 
-# Plot 4: Fast Path Hits
-plt.subplot(2, 2, 4)
-plt.plot(data['Sortedness_Percent'], data['OptimizedFastPathHits'], 'r-o')
-# Add percentage labels
-for i, row in data.iterrows():
-    if row['OptimizedNodes'] > 0:
-        hit_percent = row['OptimizedFastPathHits'] / row['OptimizedTotalInserts'] * 100
-        plt.annotate(f"{hit_percent:.1f}%",
-                     (row['Sortedness_Percent'], row['OptimizedFastPathHits']),
-                     textcoords="offset points",
-                     xytext=(0,10),
-                     ha='center')
-plt.xlabel('Sortedness (%)')
-plt.ylabel('Fast Path Hits')
-plt.title('Fast Path Usage vs. Sortedness')
-plt.grid(True)
-plt.ylim(bottom=0)  # Start y-axis at 0
+# Generate plots
+plot_metric_by_read_ratio(data, 'InsertTime', 'Insert Time (ms)', 'Insert Performance', 'insert_performance.png')
+plot_metric_by_read_ratio(data, 'SearchTime', 'Search Time (ms)', 'Search Performance', 'search_performance.png')
+plot_metric_by_read_ratio(data, 'NodeCount', 'Node Count', 'Node Usage', 'node_count.png')
 
-# Add overall title
-plt.suptitle('B+Tree Performance Analysis', fontsize=16)
-plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to make room for suptitle
-
-# Save figure
-plt.savefig('btree_performance.png', dpi=150)
-print("Generated plot: btree_performance.png")
-
-# Show plot
-plt.show()
+if 'FastPathHits' in data.columns:
+    plot_metric_by_read_ratio(data, 'FastPathHits', 'Fast Path Hits', 'Fast Path Usage', 'fast_path_hits.png')

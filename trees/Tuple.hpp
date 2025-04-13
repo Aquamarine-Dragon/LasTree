@@ -55,6 +55,17 @@ namespace db {
     public:
         TupleDesc() = default;
 
+        TupleDesc(const std::vector<type_t>& types) : types(types) {
+            for (size_t i = 0; i < types.size(); ++i) {
+                name_to_index["field" + std::to_string(i)] = i;
+            }
+        }
+
+        std::vector<type_t> get_types() const {
+            return types;
+        }
+
+
         /**
          * @brief Construct a new Tuple Desc object
          * @details Construct a new TupleDesc object with the provided types and names

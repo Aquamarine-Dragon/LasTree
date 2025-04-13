@@ -43,11 +43,11 @@ public:
         leaf_info meta;
         size_t slot_count;
     };
-    enum SplitPolicy {QUICK_PARTITION, SORT_ON_SPLIT};
+
 
     using Layout = PageLayout<BaseHeader, PageHeader, Slot, MAX_SLOTS, block_size>;
 
-    uint8_t* buffer{};
+    uint8_t* buffer;
     const TupleDesc& td;
     size_t key_index{};
     SplitPolicy split_strategy;
@@ -56,14 +56,16 @@ public:
     LeafNodeLSM() = default;
 
     // constructor that loads from an existing buffer
-    explicit LeafNodeLSM(void *buffer, const TupleDesc &td, size_t key_index)
-        : td(td),
+    explicit LeafNodeLSM(Page &page, const TupleDesc &td, size_t key_index)
+    : buffer(page.data()),
+    layout(buffer),
+    td(td),
           key_index(key_index) {
-        load(buffer);
     }
 
-    LeafNodeLSM(void* data, TupleDesc& desc, size_t key, node_id_type id, SplitPolicy policy,  node_id_type next_id, bool isCold)
-        : buffer(reinterpret_cast<uint8_t*>(data)),
+    LeafNodeLSM(Page &page, const TupleDesc& desc, size_t key, node_id_type id, SplitPolicy policy,  node_id_type next_id, bool isCold)
+    : buffer(page.data()),
+    layout(Layout(buffer)),
     td(desc),
     key_index(key),
     split_strategy(policy) {
@@ -77,18 +79,12 @@ public:
         layout.heap_end[0] = block_size;
     }
 
-    // Load node from an existing memory block
-    void load(void *buf) {
-        buffer = reinterpret_cast<uint8_t *>(buf);
-        layout = Layout(buffer);
-    }
-
     size_t free_space() const {
         return layout.free_space();
     }
 
     key_type extract_key(const Tuple& t) const {
-        return t.get_field(key_index);
+        return std::get<key_type>(t.get_field(key_index));
     }
 
     // Append an insert operation
@@ -213,7 +209,7 @@ public:
         new_leaf.layout.page_header->meta.next_id = layout.page_header->meta.next_id;
         layout.page_header->meta.next_id = new_leaf.layout.page_header->id;
 
-        return { new_leaf.min_key(), new_leaf.layout.page_header->info.id };
+        return { new_leaf.min_key(), new_leaf.layout.page_header->id };
     }
 
     key_type min_key() const {

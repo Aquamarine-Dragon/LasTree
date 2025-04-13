@@ -23,8 +23,7 @@ using namespace db;
 template<
     typename key_type,
     template <typename, typename, size_t> class LeafNodeType,
-    typename value_type,
-    template <size_t> class BufferPoolType>
+    typename buffer_pool_t>
 class OptimizedBTree: public BaseFile {
 public:
     // Type aliases for readability
@@ -32,7 +31,7 @@ public:
     using node_id_t = uint32_t;
     using leaf_t = LeafNodeType<node_id_t, key_type, DEFAULT_PAGE_SIZE>;
     using internal_t = InternalNode<node_id_t, key_type, DEFAULT_PAGE_SIZE>;
-    using buffer_pool_t = BufferPoolType<DEFAULT_PAGE_SIZE>;
+    // using buffer_pool_t = BufferPoolType<DEFAULT_PAGE_SIZE>;
     using path_t = std::vector<node_id_t>;
 
     // Constants
@@ -44,7 +43,7 @@ public:
     enum SortPolicy { SORT_ON_SPLIT, SORT_ON_MOVE, ALWAYS_SORTED };
 
     // Constructor initializes the tree with an empty root
-    explicit OptimizedBTree(buffer_pool_t &buffer_pool, SortPolicy policy = SORT_ON_SPLIT, size_t key_index,
+    explicit OptimizedBTree(buffer_pool_t &buffer_pool, SortPolicy policy = SORT_ON_SPLIT, size_t key_index = 0,
                             const std::string &name = "", const TupleDesc &td = {})
         : BaseFile(name),
         buffer_pool(buffer_pool),
@@ -64,13 +63,13 @@ public:
         // initialize leaf node
         head_id = numPages.fetch_add(1);
         PageId leaf_pid{filename, head_id};
-        leaf_t leaf(buffer_pool.get_page(leaf_pid), td, key_index, head_id, INVALID_NODE_ID, ALWAYS_SORTED, false);
+        leaf_t leaf(buffer_pool.get_mut_page(leaf_pid), td, key_index, head_id, SplitPolicy::SORT, INVALID_NODE_ID,  false);
         buffer_pool.mark_dirty(leaf_pid);
 
         // Initialize root node (internal node pointing to the leaf)
         root_id = numPages.fetch_add(1);
         PageId root_pid{filename, root_id};
-        internal_t root(buffer_pool.get_page(root_pid), root_id);
+        internal_t root(buffer_pool.get_mut_page(root_pid), root_id);
         buffer_pool.mark_dirty(root_pid);
         root.header->size = 1;
         root.children[0] = head_id;
@@ -95,7 +94,7 @@ public:
     void insert(const Tuple &tuple) {
         // std::cout << "inserting " << key << std::endl;
         std::unique_lock<std::timed_mutex> lock(tree_mutex);
-        field_t key = tuple.get_field(key_index);
+        key_type key = std::get<key_type>(tuple.get_field(key_index));
 
         // try fast path insertion if key is in the current fast path range
         if (can_use_fast_path(key)) {
@@ -110,22 +109,37 @@ public:
         node_id_t leaf_id = find_leaf(path, key, leaf_max);
 
         PageId leaf_pid{filename, leaf_id};
-        Page &leaf_page = buffer_pool.get_mut_block(leaf_pid);
-        leaf_t leaf(leaf_page.data(), td, key_index);
-        buffer_pool.mark_dirty(leaf_pid);
+        Page& page = buffer_pool.get_mut_page(leaf_pid);
+        leaf_t leaf(page, td, key_index);
 
-        // Update fast path to this leaf for future insertions
-        fast_path_leaf_id = leaf_id;
-        fast_path_min_key = leaf.get_size() > 0 ? leaf.min_key() : key;
-        fast_path_max_key = leaf_max;
+        if (leaf.insert(tuple)) {
+            buffer_pool.mark_dirty(leaf_pid);
+            fast_path_leaf_id = leaf_id;
+            fast_path_min_key = leaf.min_key();
+            fast_path_max_key = leaf_max;
+            size++;
+            return;
+        }
 
-        // insert tuple
-        leaf.insert(tuple);
+        insert_into_leaf(leaf_pid, tuple, path);
         size++;
     }
 
+    std::optional<db::Tuple> get(const key_type& key) {
+        path_t _;
+        key_type __;
+        node_id_t leaf_id = find_leaf(_, key, __);
+
+        PageId pid{filename, leaf_id};
+        Page& page = buffer_pool.get_mut_page(pid);
+        leaf_t leaf(page, td, key_index);
+
+        return leaf.get(key);
+    }
+
+
     // Update an existing key with a new value
-    bool update(const key_type &key, const value_type &value) {
+    bool update(const key_type& key, const std::vector<std::pair<size_t, db::field_t>>& updates) {
         std::unique_lock<std::timed_mutex> lock(tree_mutex);
 
         path_t path;
@@ -133,33 +147,23 @@ public:
         node_id_t leaf_id = find_leaf(path, key, _);
 
         PageId leaf_pid{filename, leaf_id};
-        Page &leaf_page = buffer_pool.get_mut_block(leaf_pid);
-        leaf_t leaf(leaf_page.data(), td, key_index);
+        Page& leaf_page = buffer_pool.get_mut_page(leaf_pid);
+        leaf_t leaf(leaf_page, td, key_index);
         buffer_pool.mark_dirty(leaf_pid);
 
-        // find slot
-        uint16_t index = leaf.value_slot(key);
         auto opt = leaf.get(key);
-        if (!opt.has_value()) {
-            return false;
+        if (!opt.has_value()) return false;
+
+        db::Tuple updated = opt.value();
+
+        for (const auto& [idx, val] : updates) {
+            updated.set_field(idx, val);
         }
 
-        // todo
-        // Tuple updated = opt.value();
-        // updated.set_field(/* value index */, value); // 如果你有 value index 或需要替换特定字段
-        // leaf.insert(updated); // LSM leaf 可以直接 append，一般 leaf 可能要替换或删除再插入
-        return true;
+        // 假设 leaf.update() 是支持替换的，否则你需要 remove + insert
+        return leaf.update(updated);
     }
 
-    // Search for a key and return its value if found
-    std::optional<value_type> get(const key_type &key) const {
-        std::unique_lock<std::timed_mutex> lock(tree_mutex);
-
-        leaf_t leaf;
-        find_leaf(leaf, key);
-
-        return leaf.get(key);
-    }
 
     // Check if a key exists in the tree
     bool contains(const key_type &key) const {
@@ -183,8 +187,8 @@ public:
         node_id_t curr_id = head_id;
         while (curr_id != INVALID_NODE_ID) {
             // fetch from buffer pool and construct
-            Page &page = buffer_pool.get_mut_block({filename, curr_id});
-            leaf_t node(page.data(), td, key_index);
+            Page &page = buffer_pool.get_mut_page({filename, curr_id});
+            leaf_t node(page, td, key_index);
 
             std::cout << "Leaf ID " << curr_id << ": [";
 
@@ -274,14 +278,14 @@ private:
     }
 
     // Insert using the fast path (O(1) insertion for sequential data)
-    void insert_fast_path(const Tuple& t, field_t key) {
+    void insert_fast_path(const Tuple& t, key_type key) {
         PageId fast_pid{filename, fast_path_leaf_id};
-        Page& leaf_page = buffer_pool.get_mut_block(fast_pid);
-        leaf_t leaf(leaf_page.data(), td, key_index);
-        buffer_pool.mark_dirty(fast_pid);
+        Page& leaf_page = buffer_pool.get_mut_page(fast_pid);
+        leaf_t leaf(leaf_page, td, key_index);
 
         if (leaf.insert(t)) {
             // different insert impl based on leaf type
+            buffer_pool.mark_dirty(fast_pid);
             fast_path_hits++;
             size++;
             return;
@@ -294,20 +298,10 @@ private:
         key_type leaf_max;
         find_path_to_node(path, key, leaf_max);
 
-        // create new leaf
-        node_id_t new_leaf_id = numPages.fetch_add(1);
-        PageId new_leaf_pid{filename, new_leaf_id};
-        Page &new_leaf_page = buffer_pool.get_mut_block(new_leaf_pid);
-        // todo: check sort policy
-        leaf_t new_leaf(new_leaf_page.data(), td, key_index, new_leaf_id, INVALID_NODE_ID, sort_policy == ALWAYS_SORTED, false);
-        buffer_pool.mark_dirty(new_leaf_pid);
+        fast_path_leaf_id = path.back();
+        fast_path_max_key = leaf_max;
 
-        // split
-        auto [split_key, new_id] = leaf.split_into(new_leaf);
-        fast_path_max_key = split_key;
-        fast_path_leaf_id = new_id;
-
-        internal_insert(path, split_key, new_id);
+        insert_into_leaf(fast_pid, t, path);
         size++;
 
         // todo
@@ -316,52 +310,49 @@ private:
         // std::cout << std::endl;
     }
 
-    bool insert_into_leaf(PageId pid, const Tuple& t, path_t* path = nullptr) {
-        Page& page = buffer_pool.get_mut_block(pid);
-        leaf_t leaf(page.data(), td, key_index);
-        buffer_pool.mark_dirty(pid);
+    /**
+     * insert tuple into leaf by path (splits required)
+     */
+    void insert_into_leaf(const PageId& pid, const Tuple& t, const path_t& path) {
+        Page& page = buffer_pool.get_mut_page(pid);
+        leaf_t leaf(page, td, key_index);
 
-        if (leaf.insert(t)) {
-            return true;
-        }
-
-        if (!path) {
-            throw std::runtime_error("Leaf is full and path is null; cannot split.");
-        }
-
-        // Split required
+        // split
         node_id_t new_leaf_id = numPages.fetch_add(1);
         PageId new_leaf_pid{filename, new_leaf_id};
-        Page& new_page = buffer_pool.get_mut_block(new_leaf_pid);
-        leaf_t new_leaf(new_page.data(), td, key_index, new_leaf_id, INVALID_NODE_ID,
-                        sort_policy == ALWAYS_SORTED, false);
+        Page& new_leaf_page = buffer_pool.get_mut_page(new_leaf_pid);
+        leaf_t new_leaf(new_leaf_page, td, key_index, new_leaf_id, SplitPolicy::SORT,INVALID_NODE_ID,  false);
         buffer_pool.mark_dirty(new_leaf_pid);
 
         auto [split_key, new_id] = leaf.split_into(new_leaf);
+        buffer_pool.mark_dirty(pid);
 
-        internal_insert(*path, split_key, new_id);
-        return insert_into_leaf(new_leaf_pid, t); // retry insert after split
+        // Insert again (must succeed)
+        new_leaf.insert(t);
+
+        internal_insert(path, split_key, new_id);
     }
+
 
     // Find the leaf node that should contain the given key
-    void find_leaf(internal_t &node, const key_type &key) const {
-        node_id_t node_id = root_id;
-        while (true) {
-            PageId pid{filename, node_id};
-            Page &page = buffer_pool.get_mut_block(pid);
-            node.load(page.data());
-
-            if (node.base_header->type != bp_node_type::INTERNAL) {
-                break;  // reached leaf
-            }
-
-            uint16_t slot = node.child_slot(key);
-            node_id = node.children[slot];
-        }
-    }
+    // void find_leaf(internal_t &node, const key_type &key) const {
+    //     node_id_t node_id = root_id;
+    //     while (true) {
+    //         PageId pid{filename, node_id};
+    //         Page &page = buffer_pool.get_mut_page(pid);
+    //         node.load(page);
+    //
+    //         if (node.base_header->type != bp_node_type::INTERNAL) {
+    //             break;  // reached leaf
+    //         }
+    //
+    //         uint16_t slot = node.child_slot(key);
+    //         node_id = node.children[slot];
+    //     }
+    // }
 
     // Only returns the leaf node id and path to it
-    node_id_t find_leaf(path_t &path, const key_type &key, key_type &leaf_max) const {
+    node_id_t find_leaf(path_t &path, const key_type &key, key_type &leaf_max) {
         leaf_max = std::numeric_limits<key_type>::max();
         path.reserve(height);
 
@@ -371,8 +362,8 @@ private:
             path.push_back(node_id);
 
             PageId pid{filename, node_id};
-            Page &page = buffer_pool.get_mut_block(pid);
-            internal_t node(page.data());
+            Page &page = buffer_pool.get_mut_page(pid);
+            internal_t node(page);
 
             if (node.base_header->type != bp_node_type::INTERNAL) {
                 break;
@@ -390,7 +381,7 @@ private:
     }
 
 
-    void find_path_to_node(path_t &path, const key_type &key, key_type &leaf_max) const {
+    void find_path_to_node(path_t &path, key_type &key, key_type &leaf_max) {
         // std::cout << "target: " << target_id << ", leaf max: " << leaf_max << std::endl;
         leaf_max = std::numeric_limits<key_type>::max();
         path.reserve(height);
@@ -399,13 +390,13 @@ private:
 
         while (true) {
             PageId pid{filename, node_id};
-            Page &page = buffer_pool.get_mut_block(pid);
+            Page &page = buffer_pool.get_mut_page(pid);
 
             auto* base = reinterpret_cast<BaseHeader*>(page.data());
 
             if (base->type == bp_node_type::LEAF) break;
 
-            internal_t node(page.data());
+            internal_t node(page);
             path.push_back(node_id);
 
             uint16_t slot = node.child_slot(key);
@@ -423,25 +414,25 @@ private:
         for (auto it = path.rbegin(); it != path.rend(); ++it) {
             node_id_t node_id = *it;
             PageId page_id{filename, node_id};
-            Page &page = buffer_pool.get_mut_block(page_id);
-            internal_t node(page.data(), node_id); // load internal node from buffer
+            Page &page = buffer_pool.get_mut_page(page_id);
+            internal_t node(page, node_id); // load internal node from buffer
             buffer_pool.mark_dirty(page_id);
 
             // Find the position where key should be inserted
             uint16_t index = node.child_slot(key);
 
             // If there's room in the node, insert and we're done
-            if (node.info->size < internal_t::internal_capacity) {
+            if (node.header->size < internal_t::internal_capacity) {
                 // Shift existing keys and children to make room
                 std::memmove(node.keys + index + 1, node.keys + index,
-                             (node.info->size - index) * sizeof(key_type));
+                             (node.header->size - index) * sizeof(key_type));
                 std::memmove(node.children + index + 2, node.children + index + 1,
-                             (node.info->size - index) * sizeof(node_id_t));
+                             (node.header->size - index) * sizeof(node_id_t));
 
                 // Insert new key and child
                 node.keys[index] = key;
                 node.children[index + 1] = child_id;
-                ++node.info->size;
+                ++node.header->size;
                 return;
             }
 
@@ -450,24 +441,22 @@ private:
             // print();
 
             // Save original size
-            uint16_t original_size = node.info->size;
+            uint16_t original_size = node.header->size;
 
             node_id_t new_node_id = numPages.fetch_add(1);
             PageId new_page_id{filename, new_node_id};
 
-            Page &new_page = buffer_pool.get_mut_block(new_page_id);
-            internal_t new_node(new_page.data(), new_node_id);
+            Page &new_page = buffer_pool.get_mut_page(new_page_id);
+            internal_t new_node(new_page, new_node_id);
             buffer_pool.mark_dirty(new_page_id);
 
             // Prepare split position
             uint16_t split_pos = SPLIT_INTERNAL_POS; // the key at split_pos will be propagated up to parent node
-            new_node.info->id = new_node_id;
-            new_node.info->next_id = node.info->next_id;
-            node.info->next_id = new_node_id;
+            new_node.header->id = new_node_id;
 
             // update node sizes
-            new_node.info->size = internal_t::internal_capacity - split_pos - 1; // new node get latter half keys
-            node.info->size = split_pos; // original node get first half keys
+            new_node.header->size = internal_t::internal_capacity - split_pos - 1; // new node get latter half keys
+            node.header->size = split_pos; // original node get first half keys
 
             // Handle the split based on where the new key goes
             if (index < split_pos) {
@@ -475,9 +464,9 @@ private:
 
                 // Copy keys and children to new node from (split_pos + 1)
                 std::memcpy(new_node.keys, node.keys + split_pos + 1,
-                            new_node.info->size * sizeof(key_type));
+                            new_node.header->size * sizeof(key_type));
                 std::memcpy(new_node.children, node.children + split_pos + 1,
-                            (new_node.info->size + 1) * sizeof(node_id_t));
+                            (new_node.header->size + 1) * sizeof(node_id_t));
 
                 // Shift to make room for new key in original node
                 std::memmove(node.keys + index + 1, node.keys + index,
@@ -488,7 +477,7 @@ private:
                 // Insert new key and child
                 node.keys[index] = key;
                 node.children[index + 1] = child_id;
-                ++node.info->size;
+                ++node.header->size;
 
                 // Key to promote to parent
                 key = node.keys[split_pos];
@@ -497,9 +486,9 @@ private:
 
                 // Copy keys and children to new node
                 std::memcpy(new_node.keys, node.keys + split_pos + 1,
-                            new_node.info->size * sizeof(key_type));
+                            new_node.header->size * sizeof(key_type));
                 std::memcpy(new_node.children + 1, node.children + split_pos + 1,
-                            new_node.info->size * sizeof(node_id_t));
+                            new_node.header->size * sizeof(node_id_t));
 
                 // Set up the new node's first child to be the new child
                 new_node.children[0] = child_id;
@@ -532,7 +521,7 @@ private:
                             (original_size - index) * sizeof(node_id_t));
 
                 // Key to promote to parent
-                ++new_node.info->size;
+                ++new_node.header->size;
                 key = node.keys[split_pos];
             }
 
@@ -557,42 +546,32 @@ private:
 
         // Get current root
         PageId root_pid{filename, root_id};
-        Page &old_root_page = buffer_pool.get_mut_block(root_pid);
-        internal_t old_root(old_root_page.data(), root_id);
+        Page &old_root_page = buffer_pool.get_mut_page(root_pid);
+        internal_t old_root(old_root_page, root_id);
 
         // Create new left child by copying current root
         PageId left_pid{filename, left_child_id};
-        Page &left_page = buffer_pool.get_mut_block(left_pid);
-        internal_t left_child(left_page.data(), static_cast<bp_node_type>(old_root.base_header->type), left_child_id);
+        Page &left_page = buffer_pool.get_mut_page(left_pid);
+        internal_t left_child(left_page, left_child_id);
         buffer_pool.mark_dirty(left_pid);
 
         // Copy contents of old root to left child
-        // std::memcpy(left_child.info, old_root.info, sizeof(typename node_t::node_info));
         left_child.copyInfoFrom(old_root);
-        left_child.info->id = left_child_id;
+        left_child.header->id = left_child_id;
 
-        if (old_root.info->type == bp_node_type::INTERNAL) {
+        if (old_root.base_header->type == bp_node_type::INTERNAL) {
             // Copy keys and children
             std::memcpy(left_child.keys, old_root.keys,
-                        old_root.info->size * sizeof(key_type));
+                        old_root.header->size * sizeof(key_type));
             std::memcpy(left_child.children, old_root.children,
-                        (old_root.info->size + 1) * sizeof(node_id_t));
+                        (old_root.header->size + 1) * sizeof(node_id_t));
         } else {
-            // Copy keys and values for leaf nodes
-            std::memcpy(left_child.keys, old_root.keys,
-                        old_root.info->size * sizeof(key_type));
-            std::memcpy(left_child.values, old_root.values,
-                        old_root.info->size * sizeof(value_type));
-        }
-
-        // If root was a leaf, convert it to internal
-        if (old_root.base_header->type == bp_node_type::LEAF) {
-            old_root.base_header->type = bp_node_type::INTERNAL;
+            throw std::logic_error("create_new_root: root was a leaf, which is unsupported in this configuration.");
         }
 
         // Update old root to become a new root
         buffer_pool.mark_dirty(root_pid);
-        old_root.info->size = 1;
+        old_root.header->size = 1;
         old_root.keys[0] = key;
         old_root.children[0] = left_child_id;
         old_root.children[1] = right_child_id;
@@ -647,7 +626,7 @@ private:
         }
 
         PageId pid{filename, node_id};
-        Page page = buffer_pool.get_page(pid);
+        Page page = buffer_pool.get_mut_page(pid);
         uint8_t* raw = page.data();
         auto* base = reinterpret_cast<BaseHeader*>(raw);
 
