@@ -3,6 +3,8 @@ project(BPlusTreeOpti)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
+
 
 # Define block size (can be changed at compile time)
 add_definitions(-DBLOCK_SIZE_BYTES=4096)
@@ -22,11 +24,29 @@ add_executable(BPlusTreeOpti
         trees/BufferPool.hpp
         trees/Database.hpp
         trees/BaseFile.hpp
+        trees/Database.cpp
+        trees/BufferPool.cpp
 )
+
+#add_executable(BPlusTreeOpti
+#        BTreeBenchmark.cpp
+#        trees/Database.cpp
+#)
 
 # Test executable
 add_executable(TreeTest
         test_trees.cpp
+#        trees/Tuple.hpp
+#        trees/Types.hpp
+#        trees/LeafNode.hpp
+#        trees/InternalNode.hpp
+#        trees/LeafNodeLSM.hpp
+#        trees/PageLayout.hpp
+#        trees/BufferPool.hpp
+#        trees/Database.hpp
+#        trees/BaseFile.hpp
+        trees/Database.cpp
+        trees/BufferPool.cpp
 )
 
 # Add optional secondary index test program if desired

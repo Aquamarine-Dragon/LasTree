@@ -5,6 +5,7 @@
 #include <utility>
 #include <variant>
 #include <cstdint>
+#include <iostream>
 
 namespace db {
     constexpr size_t INT_SIZE = sizeof(int);
@@ -31,7 +32,16 @@ namespace db {
 
     constexpr size_t DEFAULT_PAGE_SIZE = 4096;
 
+    constexpr size_t POOL_SIZE = 64;
+
     using Page = std::array<uint8_t, DEFAULT_PAGE_SIZE>;
+
+    inline void print_field(const db::field_t& f) {
+        std::visit([](auto&& val) {
+            std::cout << val;
+        }, f);
+    }
+
 } // namespace db
 
 namespace std {

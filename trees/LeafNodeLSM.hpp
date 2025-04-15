@@ -63,7 +63,7 @@ public:
           key_index(key_index) {
     }
 
-    LeafNodeLSM(Page &page, const TupleDesc& desc, size_t key, node_id_type id, SplitPolicy policy,  node_id_type next_id, bool isCold)
+    LeafNodeLSM(Page &page, const TupleDesc& desc, size_t key, node_id_type id, node_id_type next_id,  SplitPolicy policy, bool isCold)
     : buffer(page.data()),
     layout(Layout(buffer)),
     td(desc),
@@ -73,14 +73,26 @@ public:
         layout.page_header->id = id;
         layout.page_header->size = 0;
         layout.page_header->meta.next_id = next_id;
+        layout.page_header->meta.isSorted = false;
         layout.page_header->meta.isCold = isCold;
         layout.page_header->slot_count = 0;
-        layout.page_header->meta = {0, false, false};
         layout.heap_end[0] = block_size;
     }
 
     size_t free_space() const {
         return layout.free_space();
+    }
+
+    node_id_type get_id() {
+        return layout.page_header->id;
+    }
+
+    uint16_t get_size() {
+        return layout.page_header->size;
+    }
+
+    bool is_sorted() {
+        return layout.page_header->meta.isSorted;
     }
 
     key_type extract_key(const Tuple& t) const {
@@ -141,6 +153,11 @@ public:
             }
         }
         return std::nullopt;
+    }
+
+    Tuple get_tuple(size_t i) const {
+        const Slot &slot = layout.slots[i];
+        return td.deserialize(buffer + slot.offset);
     }
 
     bool is_nearly_full() const {

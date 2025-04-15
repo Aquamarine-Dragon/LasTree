@@ -13,7 +13,7 @@
 
 #include "BaseFile.hpp"
 #include "NodeTypes.hpp"
-#include "BufferPool.hpp"
+#include "Database.hpp"
 #include "InternalNode.hpp"
 #include "Tuple.hpp"
 
@@ -22,8 +22,7 @@ using namespace db;
 // OptimizedBTree: B+tree optimized for near-sorted data insertion
 template<
     typename key_type,
-    template <typename, typename, size_t> class LeafNodeType,
-    typename buffer_pool_t>
+    template <typename, typename, size_t> class LeafNodeType>
 class OptimizedBTree: public BaseFile {
 public:
     // Type aliases for readability
@@ -31,7 +30,6 @@ public:
     using node_id_t = uint32_t;
     using leaf_t = LeafNodeType<node_id_t, key_type, DEFAULT_PAGE_SIZE>;
     using internal_t = InternalNode<node_id_t, key_type, DEFAULT_PAGE_SIZE>;
-    // using buffer_pool_t = BufferPoolType<DEFAULT_PAGE_SIZE>;
     using path_t = std::vector<node_id_t>;
 
     // Constants
@@ -43,27 +41,30 @@ public:
     enum SortPolicy { SORT_ON_SPLIT, SORT_ON_MOVE, ALWAYS_SORTED };
 
     // Constructor initializes the tree with an empty root
-    explicit OptimizedBTree(buffer_pool_t &buffer_pool, SortPolicy policy = SORT_ON_SPLIT, size_t key_index = 0,
+    explicit OptimizedBTree(SortPolicy policy = SORT_ON_SPLIT, size_t key_index = 0,
                             const std::string &name = "", const TupleDesc &td = {})
         : BaseFile(name),
-        buffer_pool(buffer_pool),
           td(td),
           key_index(key_index),
           sort_policy(policy),
           height(1),
           size(0),
-          stop_background_thread(true) {
+          stop_background_thread(true),
+        root_id(INVALID_NODE_ID),
+          head_id(INVALID_NODE_ID){
         // todo : test on background (false)
+            // fast_path_min_key = std::numeric_limits<key_type>::min();
+            // fast_path_max_key = std::numeric_limits<key_type>::max();
+            // fast_path_leaf_id = head_id;
+        }
 
-        // initialize fast path tracking
-        fast_path_min_key = std::numeric_limits<key_type>::min();
-        fast_path_max_key = std::numeric_limits<key_type>::max();
-        fast_path_leaf_id = head_id;
-
+    void init() override {
+        BufferPool &buffer_pool = db::getDatabase().getBufferPool();
         // initialize leaf node
         head_id = numPages.fetch_add(1);
         PageId leaf_pid{filename, head_id};
-        leaf_t leaf(buffer_pool.get_mut_page(leaf_pid), td, key_index, head_id, SplitPolicy::SORT, INVALID_NODE_ID,  false);
+        // todo : sort policy currently hardcoded
+        leaf_t leaf(buffer_pool.get_mut_page(leaf_pid), td, key_index, head_id, INVALID_NODE_ID, SplitPolicy::SORT ,  false);
         buffer_pool.mark_dirty(leaf_pid);
 
         // Initialize root node (internal node pointing to the leaf)
@@ -71,11 +72,17 @@ public:
         PageId root_pid{filename, root_id};
         internal_t root(buffer_pool.get_mut_page(root_pid), root_id);
         buffer_pool.mark_dirty(root_pid);
-        root.header->size = 1;
+        root.header->size = 0;
         root.children[0] = head_id;
+
+        // initialize fast path tracking
+        fast_path_min_key = std::numeric_limits<key_type>::min();
+        fast_path_max_key = std::numeric_limits<key_type>::max();
+        fast_path_leaf_id = head_id;
 
         // todo: Start background thread for sorting cold nodes
         // background_sort_thread = std::thread(&OptimizedBTree::background_sort_worker, this);
+
     }
 
     // Destructor ensures background thread is properly terminated
@@ -91,22 +98,29 @@ public:
     }
 
     // Insert a tuple into the tree
-    void insert(const Tuple &tuple) {
-        // std::cout << "inserting " << key << std::endl;
+    void insert(const Tuple &tuple) override{
+        BufferPool &buffer_pool = getDatabase().getBufferPool();
+
         std::unique_lock<std::timed_mutex> lock(tree_mutex);
         key_type key = std::get<key_type>(tuple.get_field(key_index));
 
+        std::cout << "inserting " << key << std::endl;
+
         // try fast path insertion if key is in the current fast path range
         if (can_use_fast_path(key)) {
-            // std::cout << "using fast path" << std::endl;
+            std::cout << "using fast path" << std::endl;
             insert_fast_path(tuple, key);
+            // print(true);
             return;
         }
 
         // Regular path insertion
+        std::cout << "Before leaf split: " << std::endl;
+        print();
+
         path_t path;
         key_type leaf_max;
-        node_id_t leaf_id = find_leaf(path, key, leaf_max);
+        node_id_t leaf_id = find_leaf(path, key);
 
         PageId leaf_pid{filename, leaf_id};
         Page& page = buffer_pool.get_mut_page(leaf_pid);
@@ -116,30 +130,36 @@ public:
             buffer_pool.mark_dirty(leaf_pid);
             fast_path_leaf_id = leaf_id;
             fast_path_min_key = leaf.min_key();
-            fast_path_max_key = leaf_max;
+            fast_path_max_key = leaf.max_key();
             size++;
             return;
         }
 
         insert_into_leaf(leaf_pid, tuple, path);
         size++;
+        std::cout << "After leaf split: " << std::endl;
+        print();
+        std::cout << std::endl;
     }
 
-    std::optional<db::Tuple> get(const key_type& key) {
+    std::optional<db::Tuple> get(const field_t& key) override{
+        BufferPool &buffer_pool = getDatabase().getBufferPool();
+        key_type actual_key = std::get<key_type>(key);
         path_t _;
         key_type __;
-        node_id_t leaf_id = find_leaf(_, key, __);
+        node_id_t leaf_id = find_leaf(_, actual_key);
 
         PageId pid{filename, leaf_id};
         Page& page = buffer_pool.get_mut_page(pid);
         leaf_t leaf(page, td, key_index);
 
-        return leaf.get(key);
+        return leaf.get(actual_key);
     }
 
 
     // Update an existing key with a new value
     bool update(const key_type& key, const std::vector<std::pair<size_t, db::field_t>>& updates) {
+        BufferPool &buffer_pool = getDatabase().getBufferPool();
         std::unique_lock<std::timed_mutex> lock(tree_mutex);
 
         path_t path;
@@ -179,6 +199,7 @@ public:
     void print(bool show_all_values = false) const {
         // todo lock not working?
         // std::unique_lock<std::mutex> lock(tree_mutex);
+        auto &buffer_pool = getDatabase().getBufferPool();
 
         std::cout << "B+Tree Structure:" << std::endl;
         print_node(root_id, 0, show_all_values);
@@ -194,18 +215,18 @@ public:
 
             if (show_all_values) {
                 // display all values
-                for (uint16_t i = 0; i < node.info->size; i++) {
-                    std::cout << "(" << node.keys[i] << ":" << node.values[i] << ")";
-                    if (i < node.info->size - 1) std::cout << ", ";
+                for (uint16_t i = 0; i < node.get_size(); i++) {
+                    Tuple t = node.get_tuple(i);
+                    std::cout << td.to_string(t);
+                    if (i < node.get_size()  - 1) std::cout << ", ";
                 }
             } else {
-                if (node.info->size > 0) {
-                    std::cout << "min=(" << node.keys[0] << ":" << node.values[0] << ")";
+                if (node.get_size() > 0) {
+                    std::cout << "min key =(" << node.min_key() << ")";
 
-                    if (node.info->size > 1) {
-                        std::cout << ", max=(" << node.keys[node.info->size - 1]
-                                << ":" << node.values[node.info->size - 1] << ")";
-                        std::cout << ", size=" << node.info->size;
+                    if (node.get_size() > 1) {
+                        std::cout << ", max key =(" << node.max_key() << ")";
+                        std::cout << ", size=" << node.get_size();
                     }
                 } else {
                     std::cout << "empty";
@@ -215,11 +236,16 @@ public:
             std::cout << "] ";
 
             // extra info
-            std::cout << (node.info->isSorted ? "sorted" : "unsorted");
+            std::cout << (node.is_sorted() ? "sorted" : "unsorted");
             if (curr_id == fast_path_leaf_id) std::cout << " (fast path)";
             std::cout << std::endl;
 
-            curr_id = node.info->next_id;
+            if(curr_id == node.page_header->meta.next_id){
+                int a = 1;
+                throw std::runtime_error("infinite loop");
+            }
+
+            curr_id = node.page_header->meta.next_id;
         }
     }
 
@@ -239,7 +265,7 @@ public:
     }
 
 private:
-    buffer_pool_t buffer_pool;
+    // buffer_pool_t buffer_pool;
 
     // Tree structure identifiers
     const TupleDesc td; // tuple schema of this page
@@ -279,6 +305,7 @@ private:
 
     // Insert using the fast path (O(1) insertion for sequential data)
     void insert_fast_path(const Tuple& t, key_type key) {
+        BufferPool &buffer_pool = getDatabase().getBufferPool();
         PageId fast_pid{filename, fast_path_leaf_id};
         Page& leaf_page = buffer_pool.get_mut_page(fast_pid);
         leaf_t leaf(leaf_page, td, key_index);
@@ -292,28 +319,29 @@ private:
         }
 
         // If we couldn't insert, we need to split the leaf
-        // std::cout << "Before leaf split: " << std::endl;
-        // print();
+        std::cout << "Before fast path leaf split: " << std::endl;
+        print(true);
         path_t path;
         key_type leaf_max;
         find_path_to_node(path, key, leaf_max);
 
-        fast_path_leaf_id = path.back();
-        fast_path_max_key = leaf_max;
+        // fast_path_leaf_id = path.back();
+        // fast_path_max_key = leaf_max;
 
         insert_into_leaf(fast_pid, t, path);
         size++;
 
         // todo
-        // std::cout << "After leaf split: " << std::endl;
-        // print();
-        // std::cout << std::endl;
+        std::cout << "After fast path leaf split: " << std::endl;
+        print(true);
+        std::cout << std::endl;
     }
 
     /**
      * insert tuple into leaf by path (splits required)
      */
     void insert_into_leaf(const PageId& pid, const Tuple& t, const path_t& path) {
+        auto &buffer_pool = getDatabase().getBufferPool();
         Page& page = buffer_pool.get_mut_page(pid);
         leaf_t leaf(page, td, key_index);
 
@@ -321,14 +349,25 @@ private:
         node_id_t new_leaf_id = numPages.fetch_add(1);
         PageId new_leaf_pid{filename, new_leaf_id};
         Page& new_leaf_page = buffer_pool.get_mut_page(new_leaf_pid);
-        leaf_t new_leaf(new_leaf_page, td, key_index, new_leaf_id, SplitPolicy::SORT,INVALID_NODE_ID,  false);
+        // todo also split policy
+        leaf_t new_leaf(new_leaf_page, td, key_index, new_leaf_id, INVALID_NODE_ID, SplitPolicy::SORT,  false);
         buffer_pool.mark_dirty(new_leaf_pid);
 
         auto [split_key, new_id] = leaf.split_into(new_leaf);
         buffer_pool.mark_dirty(pid);
 
         // Insert again (must succeed)
-        new_leaf.insert(t);
+        // todo not sure
+        key_type key = std::get<key_type>(t.get_field(key_index));
+        if(key < split_key){
+            leaf.insert(t);
+            fast_path_max_key = leaf.max_key();
+        }else{
+            new_leaf.insert(t);
+            fast_path_leaf_id = new_leaf_id;
+            fast_path_max_key = new_leaf.max_key();
+        }
+
 
         internal_insert(path, split_key, new_id);
     }
@@ -352,8 +391,8 @@ private:
     // }
 
     // Only returns the leaf node id and path to it
-    node_id_t find_leaf(path_t &path, const key_type &key, key_type &leaf_max) {
-        leaf_max = std::numeric_limits<key_type>::max();
+    node_id_t find_leaf(path_t &path, const key_type &key) {
+        auto &buffer_pool = getDatabase().getBufferPool();
         path.reserve(height);
 
         node_id_t node_id = root_id;
@@ -372,9 +411,6 @@ private:
             uint16_t slot = node.child_slot(key);
             node_id = node.children[slot];
 
-            if (slot < node.header->size) {
-                leaf_max = node.keys[slot];
-            }
         }
 
         return node_id;
@@ -383,6 +419,7 @@ private:
 
     void find_path_to_node(path_t &path, key_type &key, key_type &leaf_max) {
         // std::cout << "target: " << target_id << ", leaf max: " << leaf_max << std::endl;
+        auto &buffer_pool = getDatabase().getBufferPool();
         leaf_max = std::numeric_limits<key_type>::max();
         path.reserve(height);
 
@@ -410,12 +447,13 @@ private:
 
     // Insert a key and child into internal nodes along the path
     void internal_insert(const path_t &path, key_type key, node_id_t child_id) {
+    BufferPool &buffer_pool = getDatabase().getBufferPool();
         // Process path in reverse (from leaf's parent up to root)
         for (auto it = path.rbegin(); it != path.rend(); ++it) {
             node_id_t node_id = *it;
             PageId page_id{filename, node_id};
             Page &page = buffer_pool.get_mut_page(page_id);
-            internal_t node(page, node_id); // load internal node from buffer
+            internal_t node(page); // load internal node from buffer
             buffer_pool.mark_dirty(page_id);
 
             // Find the position where key should be inserted
@@ -542,6 +580,7 @@ private:
     // key: key that we want to elect to new node
     // right_child_id: the right subtree id of this key
     void create_new_root(const key_type &key, node_id_t right_child_id) {
+    BufferPool &buffer_pool = getDatabase().getBufferPool();
         node_id_t left_child_id = numPages.fetch_add(1);
 
         // Get current root
@@ -621,6 +660,7 @@ private:
 
     // Print a node and its children recursively (for debugging)
     void print_node(node_id_t node_id, int level, bool show_all_values) const {
+        auto &buffer_pool = getDatabase().getBufferPool();
         for (int i = 0; i < level; i++) {
             std::cout << "  ";
         }
@@ -631,17 +671,15 @@ private:
         auto* base = reinterpret_cast<BaseHeader*>(raw);
 
         if (base->type == bp_node_type::LEAF) {
-            leaf_t node(raw, td, key_index);  // load leaf
+            leaf_t node(page, td, key_index);  // load leaf
 
             std::cout << "Leaf ID " << node_id << ": [";
 
             if (show_all_values) {
-                for (uint16_t i = 0; i < node.info->size; i++) {
-                    std::optional<Tuple> t = node.get_by_index(i);
-                    if (t.has_value()) {
-                        std::cout << node.extract_key(*t);
-                        if (i < node.get_size() - 1) std::cout << ", ";
-                    }
+                for (uint16_t i = 0; i < node.get_size(); i++) {
+                    Tuple t = node.get_tuple(i);
+                    std::cout << td.to_string(t);
+                    if (i < node.get_size()  - 1) std::cout << ", ";
                 }
             } else {
                 if (node.get_size() > 0) {
@@ -658,30 +696,36 @@ private:
 
             std::cout << "]" << std::endl;
         } else {
-            internal_t node(raw, node_id);
+            internal_t node(page);
             std::cout << "Internal ID " << node_id << ": [";
 
-            if (show_all_values) {
-                for (uint16_t i = 0; i < node.header->size; i++) {
-                    std::cout << node.keys[i];
-                    if (i < node.header->size - 1) std::cout << ", ";
-                }
-            } else {
-                if (node.header->size > 0) {
-                    std::cout << "min=" << node.keys[0];
-                    if (node.header->size > 1) {
-                        std::cout << ", max=" << node.keys[node.header->size - 1];
-                        std::cout << ", size=" << node.header->size;
-                    }
-                } else {
-                    std::cout << "empty";
-                }
+            for (uint16_t i = 0; i < node.header->size; i++) {
+                print_field(node.keys[i]);
+                if (i < node.header->size - 1) std::cout << ", ";
             }
+
+            // if (show_all_values) {
+            //     for (uint16_t i = 0; i < node.header->size; i++) {
+            //         print_field(node.keys[i]);
+            //         if (i < node.header->size - 1) std::cout << ", ";
+            //     }
+            // } else {
+            //     if (node.header->size > 0) {
+            //         print_field(node.keys[0]);
+            //         if (node.header->size > 1) {
+            //             std::cout << ", max=";
+            //             print_field(node.keys[node.header->size - 1]);
+            //             std::cout << ", size=" << node.header->size;
+            //         }
+            //     } else {
+            //         std::cout << "empty";
+            //     }
+            // }
 
             std::cout << "]" << std::endl;
 
             for (uint16_t i = 0; i <= node.header->size; i++) {
-                print_node(node.children[i], level + 1, show_all_values);
+                print_node(node.children[i], level + 1, false);
             }
         }
     }

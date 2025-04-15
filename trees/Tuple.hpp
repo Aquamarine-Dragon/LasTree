@@ -240,6 +240,34 @@ namespace db {
             }
             return {types, names};
         }
+
+        std::string to_string(const Tuple &t) const {
+            if (!compatible(t)) {
+                return "<incompatible tuple>";
+            }
+
+            std::string result = "(";
+            for (size_t i = 0; i < t.size(); ++i) {
+                if (i > 0) result += ", ";
+
+                const field_t &field = t.get_field(i);
+                switch (types[i]) {
+                    case type_t::INT:
+                        result += std::to_string(std::get<int>(field));
+                    break;
+                    case type_t::DOUBLE:
+                        result += std::to_string(std::get<double>(field));
+                    break;
+                    case type_t::CHAR:
+                    case type_t::VARCHAR:
+                        result += "\"" + std::get<std::string>(field) + "\"";
+                    break;
+                }
+            }
+            result += ")";
+            return result;
+        }
+
     };
 } // namespace db
 

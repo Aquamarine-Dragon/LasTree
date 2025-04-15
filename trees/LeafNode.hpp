@@ -36,52 +36,62 @@ public:
         uint16_t size; // number of tuples
         leaf_info meta;
         size_t slot_count;
+        size_t heap_end;
     };
 
-    using Layout = PageLayout<BaseHeader, PageHeader, Slot, MAX_SLOTS, block_size>;
+    // using Layout = PageLayout<BaseHeader, PageHeader, Slot, MAX_SLOTS, block_size>;
 
     uint8_t *buffer; // address of the page that stores this page
     const TupleDesc &td; // tuple schema of this page
     size_t key_index{}; // index of key in each tuple
-    Layout layout;
+
+    BaseHeader* base_header;
+    PageHeader* page_header;
+    Slot* slots;
 
     LeafNode() = default;
 
     // constructor that loads from an existing buffer
     explicit LeafNode(Page &page, const TupleDesc &td, size_t key_index)
         : buffer(page.data()),
-          layout(buffer),
-          td(td),
+        td(td),
           key_index(key_index) {
+        base_header = reinterpret_cast<BaseHeader*>(buffer);
+        page_header = reinterpret_cast<PageHeader*>(buffer + sizeof(BaseHeader));
+        slots = reinterpret_cast<Slot*>(buffer + sizeof(BaseHeader) + sizeof(PageHeader));
     }
 
     // constructor: divide page into multiples parts
-    LeafNode(Page &page, const TupleDesc &desc, size_t key, node_id_type id, node_id_type next_id, bool sorted,
+    LeafNode(Page &page, const TupleDesc &desc, size_t key, node_id_type id, node_id_type next_id,  SplitPolicy policy,
              bool isCold)
-        : buffer(page.data()),
-          layout(Layout(buffer)),
+        :buffer(page.data()),
           td(desc),
           key_index(key) {
-        layout.base_header->type = 0;
-        layout.page_header->id = id;
-        layout.page_header->meta.next_id = next_id;
-        layout.page_header->meta.isSorted = sorted;
-        layout.page_header->meta.isCold = isCold;
-        layout.page_header->size = 0;
-        layout.page_header->slot_count = 0;
-        layout.heap_end[0] = block_size; // heap grows down
+        base_header = reinterpret_cast<BaseHeader*>(buffer);
+        page_header = reinterpret_cast<PageHeader*>(buffer + sizeof(BaseHeader));
+        slots = reinterpret_cast<Slot*>(buffer + sizeof(BaseHeader) + sizeof(PageHeader));
+
+        base_header->type = 0;
+        page_header->id = id;
+        page_header->meta.next_id = next_id;
+        page_header->meta.isSorted = true;
+        page_header->meta.isCold = isCold;
+        page_header->size = 0;
+        page_header->slot_count = 0;
+        page_header->heap_end = block_size;
+        // heap_end[0] = block_size; // heap grows down
     }
 
     node_id_type get_id() {
-        return layout.page_header->info.id;
+        return page_header->id;
     }
 
     uint16_t get_size() {
-        return layout.page_header->info.size;
+        return page_header->size;
     }
 
-    size_t free_space() const {
-        return layout.free_space();
+    bool is_sorted() {
+        return page_header->meta.isSorted;
     }
 
     key_type extract_key(const Tuple &t) const {
@@ -90,25 +100,24 @@ public:
 
     // Binary search based on keys in slots
     uint16_t value_slot(const key_type &key) const {
-        if (!layout.page_header->meta.isSorted) {
-            for (uint16_t i = 0; i < layout.page_header->slot_count; ++i) {
-                if (!layout.slots[i].valid) continue;
-                Tuple t = td.deserialize(buffer + layout.slots[i].offset);
+        if (!page_header->meta.isSorted) {
+            for (uint16_t i = 0; i < page_header->slot_count; ++i) {
+                if (!slots[i].valid) continue;
+                Tuple t = td.deserialize(buffer + slots[i].offset);
                 if (extract_key(t) >= key) return i;
             }
-            return layout.page_header->slot_count;
+            return page_header->slot_count;
         }
 
-
         // Binary search if sorted
-        uint16_t left = 0, right = layout.page_header->slot_count;
+        uint16_t left = 0, right = page_header->slot_count;
         while (left < right) {
             uint16_t mid = (left + right) / 2;
-            if (!layout.slots[mid].valid) {
+            if (!slots[mid].valid) {
                 ++left;
                 continue;
             }
-            Tuple mid_tuple = td.deserialize(buffer + layout.slots[mid].offset);
+            Tuple mid_tuple = td.deserialize(buffer + slots[mid].offset);
             if (extract_key(mid_tuple) < key) left = mid + 1;
             else right = mid;
         }
@@ -118,8 +127,8 @@ public:
     std::optional<Tuple> get(const key_type &key) const {
         uint16_t index = value_slot(key);
 
-        if (index < layout.page_header->slot_count) {
-            const Slot &slot = layout.slots[index];
+        if (index < page_header->slot_count) {
+            const Slot &slot = slots[index];
             if (!slot.valid) return std::nullopt;
 
             Tuple t = td.deserialize(buffer + slot.offset);
@@ -130,22 +139,71 @@ public:
         return std::nullopt;
     }
 
+    Tuple get_tuple(size_t i) const {
+        const Slot &slot = slots[i];
+        return td.deserialize(buffer + slot.offset);
+    }
+
+    size_t free_space() const {
+        return block_size - sizeof(BaseHeader) + sizeof(PageHeader) - sizeof(Slot) * (page_header->slot_count + 1);
+    }
+
+    bool can_insert(size_t tuple_len) const {
+        size_t new_offset = page_header->heap_end - tuple_len;
+        size_t end_offset = sizeof(BaseHeader) + sizeof(PageHeader) + sizeof(Slot) * (page_header->slot_count + 1);
+
+        // std::cout << "[new heap offset]: " << new_offset
+        //       << ", [metadata end offset]: " << end_offset << std::endl;
+        return new_offset >= end_offset;
+    }
+
+    void print_page_debug() const {
+        std::cout << "  Slots (" << page_header->slot_count << "):" << std::endl;
+        for (size_t i = 0; i < page_header->slot_count; ++i) {
+            const auto& slot = slots[i];
+            std::cout << "    [" << i << "]: offset=" << slot.offset
+                      << ", length=" << slot.length
+                      << ", valid=" << slot.valid << std::endl;
+        }
+
+        std::cout << "  Heap content:" << std::endl;
+        for (size_t i = 0; i < page_header->slot_count; ++i) {
+            const auto& slot = slots[i];
+            if (slot.valid) {
+                Tuple t = td.deserialize(buffer + slot.offset);
+                std::cout << "    [" << i << "] " << td.to_string(t) << std::endl;
+            }
+        }
+    }
+
+
     bool insert(const Tuple &t) {
         const size_t len = td.length(t);
-        if (free_space() < len + sizeof(Slot)) return false;
+
+        if (!can_insert(len)) {
+            return false;
+        }
 
         key_type key = extract_key(t);
         uint16_t insert_pos = value_slot(key);
 
-        *layout.heap_end -= len;
-        td.serialize(buffer + *layout.heap_end, t);
+        page_header->heap_end -= len;
 
-        std::memmove(layout.slots + insert_pos + 1, layout.slots + insert_pos,
-                     (layout.page_header->slot_count - insert_pos) * sizeof(Slot));
+        // auto offset = static_cast<uint16_t>(page_header.heap_end);
 
-        layout.slots[insert_pos] = {static_cast<uint16_t>(*layout.heap_end), static_cast<uint16_t>(len), true};
-        ++(layout.page_header->slot_count);
-        ++layout.page_header->size;
+        td.serialize(buffer + page_header->heap_end, t);
+
+        if (insert_pos < page_header->slot_count) {
+            std::memmove(slots + insert_pos + 1, slots + insert_pos,
+                     (page_header->slot_count - insert_pos) * sizeof(Slot));
+        }
+
+        slots[insert_pos] = {static_cast<uint16_t>(page_header->heap_end), static_cast<uint16_t>(len), true};
+        ++(page_header->slot_count);
+        ++page_header->size;
+
+        // std::cout << "[DEBUG] After inserting key=" << extract_key(t) << std::endl;
+        // print_page_debug();
         return true;
     }
 
@@ -153,14 +211,14 @@ public:
         key_type key = extract_key(t);
         uint16_t index = value_slot(key);
 
-        if (index < layout.page_header->slot_count) {
-            const Slot &slot = layout.slots[index];
+        if (index < page_header->slot_count) {
+            const Slot &slot = slots[index];
             if (slot.valid) {
                 Tuple existing = td.deserialize(buffer + slot.offset);
                 if (extract_key(existing) == key) {
                     // Overwrite slot: mark old invalid, insert new
-                    layout.slots[index].valid = false;
-                    --layout.page_header->size;
+                    slots[index].valid = false;
+                    --page_header->size;
                     return insert(t);
                 }
             }
@@ -174,33 +232,40 @@ public:
         // 2. Decide how much to move
         size_t total_bytes = block_size - free_space();
         size_t moved = 0;
-        size_t i = 0;
+        // size_t i = 0;
+        int i = static_cast<int>(page_header->slot_count - 1);
 
         // find key index which makes moved >= 25%
         // todo modify percentage
-        for (; i < layout.page_header->slot_count; ++i) {
-            const auto &slot = layout.slots[i];
+        for (; i >= 0; --i) {
+            const auto &slot = slots[i];
             if (!slot.valid) continue;
             moved += slot.length + sizeof(Slot);
             if (moved >= total_bytes / 4) break;
         }
+        // for (; i < page_header->slot_count; ++i) {
+        //     const auto &slot = slots[i];
+        //     if (!slot.valid) continue;
+        //     moved += slot.length + sizeof(Slot);
+        //     if (moved >= total_bytes / 4) break;
+        // }
 
         // move those slots to new_leaf
-        for (size_t j = i + 1; j < layout.page_header->slot_count; ++j) {
-            const auto &slot = layout.slots[j];
+        for (size_t j = i + 1; j < page_header->slot_count; ++j) {
+            const auto &slot = slots[j];
             if (!slot.valid) continue;
 
             Tuple t = td.deserialize(buffer + slot.offset);
             new_leaf.insert(t);
-            layout.slots[j].valid = false;
-            --layout.page_header->size;
+            slots[j].valid = false;
+            --page_header->size;
         }
 
         // update next pointers
-        new_leaf.layout.page_header->meta.next_id = layout.page_header->meta.next_id;
-        layout.page_header->meta.next_id = new_leaf.layout.page_header->meta.next_id;
+        new_leaf.page_header->meta.next_id = page_header->meta.next_id;
+        page_header->meta.next_id = new_leaf.page_header->id;
 
-        return {new_leaf.min_key(), new_leaf.layout.page_header->id};
+        return {new_leaf.min_key(), new_leaf.page_header->id};
     }
 
     bool is_nearly_full() const {
@@ -212,9 +277,9 @@ public:
     }
 
     key_type min_key() const {
-        for (size_t i = 0; i < layout.page_header->slot_count; ++i) {
-            if (layout.slots[i].valid) {
-                Tuple t = td.deserialize(buffer + layout.slots[i].offset);
+        for (size_t i = 0; i < page_header->slot_count; ++i) {
+            if (slots[i].valid) {
+                Tuple t = td.deserialize(buffer + slots[i].offset);
                 return extract_key(t);
             }
         }
@@ -222,9 +287,9 @@ public:
     }
 
     key_type max_key() const {
-        for (int i = layout.page_header->slot_count - 1; i >= 0; --i) {
-            if (layout.slots[i].valid) {
-                Tuple t = td.deserialize(buffer + layout.slots[i].offset);
+        for (int i = page_header->slot_count - 1; i >= 0; --i) {
+            if (slots[i].valid) {
+                Tuple t = td.deserialize(buffer + slots[i].offset);
                 return extract_key(t);
             }
         }

@@ -4,9 +4,11 @@
 #include <cstddef>
 #include <stdexcept>
 #include <fcntl.h>
+#include <unistd.h>
 #include <sys/stat.h>
 
 
+#include "Tuple.hpp"
 #include "Types.hpp"  // for db::Page
 
 namespace db {
@@ -20,6 +22,7 @@ namespace db {
         int fd;  // file descriptor
         std::string filename;
     public:
+
         explicit BaseFile(const std::string& filename)
         : filename(filename) {
             fd = open(filename.c_str(), O_RDWR | O_CREAT, 0644);
@@ -35,6 +38,12 @@ namespace db {
         const std::string& getName() const {
             return filename;
         }
+
+        virtual void init() = 0;
+
+        virtual void insert(const Tuple &t) = 0;
+
+        virtual std::optional<db::Tuple> get(const field_t& key) = 0;
 
         virtual void readPage(Page& page, size_t id) const {
             std::fill(page.begin(), page.end(), 0);

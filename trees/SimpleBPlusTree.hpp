@@ -3,6 +3,7 @@
 
 #pragma once
 
+
 #include <cstdint>
 #include <vector>
 #include <iostream>
@@ -12,13 +13,16 @@
 #include <mutex>
 
 #include "NodeTypes.hpp"
-#include "BasicBTreeNode.hpp"
-#include "BufferPool.hpp"
 #include "LeafNode.hpp"
 #include "Types.hpp"
+#include <BaseFile.hpp>
+#include <Database.hpp>
+#include <InternalNode.hpp>
+
+using namespace db;
 
 // SimpleBPlusTree - Basic B+tree implementation using memory blocks
-template <typename key_type, typename buffer_pool_t>
+template <typename key_type>
 class SimpleBPlusTree : public BaseFile {
 public:
     // Type aliases for readability
@@ -34,19 +38,39 @@ public:
     static constexpr uint16_t SPLIT_INTERNAL_POS = internal_t::internal_capacity / 2;
     static constexpr node_id_t INVALID_NODE_ID = std::numeric_limits<node_id_t>::max();
     
-    explicit SimpleBPlusTree(buffer_pool_t &buffer_pool,
+    explicit SimpleBPlusTree(
                 const std::string& filename,
                 const TupleDesc& td,
                 size_t key_index)
         : BaseFile(filename),
-          buffer_pool(buffer_pool),
           td(td),
-          key_index(key_index) {
+          key_index(key_index),
+        root_id(INVALID_NODE_ID),
+          head_id(INVALID_NODE_ID) {
         // Allocate leaf node
+        // head_id = num_pages.fetch_add(1);
+        // PageId leaf_pid{filename, head_id};
+        // Page& leaf_page = buffer_pool.get_mut_page(leaf_pid);
+        // leaf_t leaf(leaf_page, td, key_index, head_id, INVALID_NODE_ID, /*isSorted=*/true, /*isCold=*/false);
+        // buffer_pool.mark_dirty(leaf_pid);
+        //
+        // // Allocate root node
+        // root_id = num_pages.fetch_add(1);
+        // PageId root_pid{filename, root_id};
+        // Page& root_page = buffer_pool.get_mut_page(root_pid);
+        // internal_t root(root_page, bp_node_type::INTERNAL);
+        // buffer_pool.mark_dirty(root_pid);
+        // root.header->size = 1;
+        // root.children[0] = head_id;
+    }
+
+    void init() override{
+        // Allocate leaf node
+        auto &buffer_pool = getDatabase().getBufferPool();
         head_id = num_pages.fetch_add(1);
         PageId leaf_pid{filename, head_id};
         Page& leaf_page = buffer_pool.get_mut_page(leaf_pid);
-        leaf_t leaf(leaf_page, td, key_index, head_id, INVALID_NODE_ID, /*isSorted=*/true, /*isCold=*/false);
+        leaf_t leaf(leaf_page, td, key_index, head_id, INVALID_NODE_ID, SplitPolicy::SORT,  /*isCold=*/false);
         buffer_pool.mark_dirty(leaf_pid);
 
         // Allocate root node
@@ -60,10 +84,15 @@ public:
     }
     
     // Insert a key-value pair into the tree
-    void insert(const Tuple &tuple) {
+    void insert(const Tuple &tuple) override{
+
         // Find the leaf node where the key belongs
+        BufferPool &buffer_pool = getDatabase().getBufferPool();
         path_t path;
         key_type key = std::get<key_type>(tuple.get_field(key_index));
+
+        std::cout << "inserting " << key << std::endl;
+
         node_id_t leaf_id = find_leaf_with_path(path, key);
         PageId leaf_pid{filename, leaf_id};
         Page &leaf_page = buffer_pool.get_mut_page(leaf_pid);
@@ -80,15 +109,17 @@ public:
         size++;
     }
 
-    std::optional<db::Tuple> get(const key_type& key) const {
+    std::optional<db::Tuple> get(const field_t& key) override {
         // Find leaf containing key
+        BufferPool &buffer_pool = getDatabase().getBufferPool();
+        key_type actual_key = std::get<key_type>(key);
         path_t path;
-        node_id_t leaf_id = find_leaf_with_path(path, key);
+        node_id_t leaf_id = find_leaf_with_path(path, actual_key);
         PageId page_id{filename, leaf_id};
         Page& page = buffer_pool.get_mut_page(page_id);
         leaf_t leaf(page, td, key_index);
 
-        return leaf.get(key);
+        return leaf.get(actual_key);
     }
 
     
@@ -121,7 +152,7 @@ public:
     }
     
 private:
-    buffer_pool_t &buffer_pool;
+    // buffer_pool_t &buffer_pool;
     const TupleDesc& td;
     size_t key_index;
     
@@ -136,13 +167,17 @@ private:
 
     // Find the leaf and collect the path from root to leaf
     node_id_t find_leaf_with_path(path_t& path, const key_type& key) const {
+        if (key == 906) {
+            std::cout << "hello " << key << std::endl;
+            // print();
+        }
         path.reserve(height);
         node_id_t node_id = root_id;
 
         while (true) {
             path.push_back(node_id);
             PageId pid{filename, node_id};
-            Page& page = buffer_pool.get_mut_page(pid);
+            Page& page = getDatabase().getBufferPool().get_mut_page(pid);
 
             const auto* base_header = reinterpret_cast<const BaseHeader*>(page.data());
             if (base_header->type == bp_node_type::LEAF) break;
@@ -160,6 +195,7 @@ private:
      * insert tuple into leaf by path (splits required)
      */
     void insert_into_leaf(const PageId& pid, const Tuple& t, const path_t& path) {
+        BufferPool &buffer_pool = getDatabase().getBufferPool();
         Page& page = buffer_pool.get_mut_page(pid);
         leaf_t leaf(page, td, key_index);
 
@@ -167,7 +203,7 @@ private:
         node_id_t new_leaf_id = num_pages.fetch_add(1);
         PageId new_leaf_pid{filename, new_leaf_id};
         Page& new_leaf_page = buffer_pool.get_mut_page(new_leaf_pid);
-        leaf_t new_leaf(new_leaf_page, td, key_index, new_leaf_id, INVALID_NODE_ID, true, false);
+        leaf_t new_leaf(new_leaf_page, td, key_index, new_leaf_id, INVALID_NODE_ID, SplitPolicy::SORT, false);
         buffer_pool.mark_dirty(new_leaf_pid);
 
         auto [split_key, new_id] = leaf.split_into(new_leaf);
@@ -181,6 +217,7 @@ private:
 
     // Insert a key and child into internal nodes along the path
     void internal_insert(const path_t &path, key_type key, node_id_t child_id) {
+        BufferPool &buffer_pool = getDatabase().getBufferPool();
         // Process path in reverse (from leaf's parent up to root)
         for (auto it = path.rbegin(); it != path.rend(); ++it) {
             node_id_t node_id = *it;
@@ -309,6 +346,7 @@ private:
         // std::cout << std::endl;
     }
     void create_new_root(const key_type &key, node_id_t right_child_id) {
+        BufferPool &buffer_pool = getDatabase().getBufferPool();
         node_id_t left_child_id = num_pages.fetch_add(1);
 
         // Get current root
