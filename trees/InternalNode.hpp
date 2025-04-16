@@ -55,9 +55,12 @@ public:
     }
 
     void copyInfoFrom(const InternalNode& other) {
+        this->base_header->type = other.base_header->type;
+        this->header->id = other.header->id;
         this->header->size = other.header->size;
-        std::memcpy(this->keys, other.keys, other.header->size * sizeof(key_type));
-        std::memcpy(this->children, other.children, (other.header->size + 1) * sizeof(node_id_type));
+
+        // std::memcpy(this->keys, other.keys, other.header->size * sizeof(key_type));
+        // std::memcpy(this->children, other.children, (other.header->size + 1) * sizeof(node_id_type));
     }
 
 };

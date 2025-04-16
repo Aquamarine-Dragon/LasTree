@@ -44,7 +44,8 @@ void run_benchmark(size_t dataSize) {
     using Buffer = BufferPool;
     using SortPolicy = OptimizedBTree<key_type, LeafNode>::SortPolicy;
 
-    std::vector<double> sortedness_levels = {1.0, 0.95, 0.8, 0.5, 0.2, 0.0};
+    std::vector<double> sortedness_levels = {0.0};
+    // std::vector<double> sortedness_levels = {1.0, 0.95, 0.8, 0.5, 0.2, 0.0};
     std::vector<double> read_ratios = {0.0, 0.1, 0.5};
 
     std::vector<ResultRow> results;
@@ -109,7 +110,8 @@ void run_benchmark(size_t dataSize) {
             // === Benchmark 2: OptimizedBTree with LeafNode ===
             {
                 const char *name = "opt.db";
-                getDatabase().remove(name);
+
+                // getDatabase().remove(name);
                 std::remove(name);
                 db::getDatabase().add(
                     std::make_unique<OptimizedBTree<key_type, LeafNode> >(
@@ -126,6 +128,10 @@ void run_benchmark(size_t dataSize) {
 
                 t0 = std::chrono::high_resolution_clock::now();
                 for (key_type k: read_keys) {
+                    if (k == 317) {
+                        int b = 1;
+                    }
+
                     auto val = tree.get(k);
                     if (!val.has_value()) throw std::runtime_error("Missing key in optimized tree");
                 }
@@ -186,7 +192,7 @@ void run_benchmark(size_t dataSize) {
 
 
 int main(int argc, char *argv[]) {
-    size_t dataSize = 10000;
+    size_t dataSize = 1000;
     if (argc > 1) dataSize = std::stoi(argv[1]);
 
     run_benchmark(dataSize);

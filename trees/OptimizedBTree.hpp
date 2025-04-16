@@ -104,20 +104,28 @@ public:
         std::unique_lock<std::timed_mutex> lock(tree_mutex);
         key_type key = std::get<key_type>(tuple.get_field(key_index));
 
+        // if ((key + 1) % 100 == 0) {
+        //     std::cout << "inserting " << key << std::endl;
+        // }
         std::cout << "inserting " << key << std::endl;
+
+        if (key == 914) {
+            int a = 1;
+        }
 
         // try fast path insertion if key is in the current fast path range
         if (can_use_fast_path(key)) {
-            std::cout << "using fast path" << std::endl;
+            // std::cout << "using fast path" << std::endl;
+            print(true, true);
+            std::cout << std::endl;
+            std::cout << "fast path leaf: " << fast_path_leaf_id << std::endl;
+            std::cout << "fast path min key: " << fast_path_min_key << std::endl;
+            std::cout << "fast path max key: " << fast_path_max_key << std::endl;
             insert_fast_path(tuple, key);
-            // print(true);
             return;
         }
 
         // Regular path insertion
-        std::cout << "Before leaf split: " << std::endl;
-        print();
-
         path_t path;
         key_type leaf_max;
         node_id_t leaf_id = find_leaf(path, key);
@@ -135,11 +143,14 @@ public:
             return;
         }
 
+        // std::cout << "Before leaf split: " << std::endl;
+        // print();
+
         insert_into_leaf(leaf_pid, tuple, path);
         size++;
-        std::cout << "After leaf split: " << std::endl;
-        print();
-        std::cout << std::endl;
+        // std::cout << "After leaf split: " << std::endl;
+        // print();
+        // std::cout << std::endl;
     }
 
     std::optional<db::Tuple> get(const field_t& key) override{
@@ -196,7 +207,7 @@ public:
     }
 
     // Print the tree structure (for debugging)
-    void print(bool show_all_values = false) const {
+    void print(bool show_all_leaf, bool show_all_values = false) const {
         // todo lock not working?
         // std::unique_lock<std::mutex> lock(tree_mutex);
         auto &buffer_pool = getDatabase().getBufferPool();
@@ -211,6 +222,11 @@ public:
             Page &page = buffer_pool.get_mut_page({filename, curr_id});
             leaf_t node(page, td, key_index);
 
+            if (!show_all_leaf && curr_id != head_id && node.page_header->meta.next_id != INVALID_NODE_ID) {
+                curr_id = node.page_header->meta.next_id;
+                continue;
+            }
+
             std::cout << "Leaf ID " << curr_id << ": [";
 
             if (show_all_values) {
@@ -221,16 +237,18 @@ public:
                     if (i < node.get_size()  - 1) std::cout << ", ";
                 }
             } else {
-                if (node.get_size() > 0) {
-                    std::cout << "min key =(" << node.min_key() << ")";
 
-                    if (node.get_size() > 1) {
-                        std::cout << ", max key =(" << node.max_key() << ")";
-                        std::cout << ", size=" << node.get_size();
+                    if (node.get_size() > 0) {
+                        std::cout << "min key =(" << node.min_key() << ")";
+
+                        if (node.get_size() > 1) {
+                            std::cout << ", max key =(" << node.max_key() << ")";
+                            std::cout << ", size=" << node.get_size();
+                        }
+                    } else {
+                        std::cout << "empty";
                     }
-                } else {
-                    std::cout << "empty";
-                }
+
             }
 
             std::cout << "] ";
@@ -239,11 +257,6 @@ public:
             std::cout << (node.is_sorted() ? "sorted" : "unsorted");
             if (curr_id == fast_path_leaf_id) std::cout << " (fast path)";
             std::cout << std::endl;
-
-            if(curr_id == node.page_header->meta.next_id){
-                int a = 1;
-                throw std::runtime_error("infinite loop");
-            }
 
             curr_id = node.page_header->meta.next_id;
         }
@@ -319,8 +332,8 @@ private:
         }
 
         // If we couldn't insert, we need to split the leaf
-        std::cout << "Before fast path leaf split: " << std::endl;
-        print(true);
+        // std::cout << "Before fast path leaf split: " << std::endl;
+        // print(true);
         path_t path;
         key_type leaf_max;
         find_path_to_node(path, key, leaf_max);
@@ -332,9 +345,9 @@ private:
         size++;
 
         // todo
-        std::cout << "After fast path leaf split: " << std::endl;
-        print(true);
-        std::cout << std::endl;
+        // std::cout << "After fast path leaf split: " << std::endl;
+        // print(true);
+        // std::cout << std::endl;
     }
 
     /**
@@ -351,23 +364,23 @@ private:
         Page& new_leaf_page = buffer_pool.get_mut_page(new_leaf_pid);
         // todo also split policy
         leaf_t new_leaf(new_leaf_page, td, key_index, new_leaf_id, INVALID_NODE_ID, SplitPolicy::SORT,  false);
-        buffer_pool.mark_dirty(new_leaf_pid);
 
         auto [split_key, new_id] = leaf.split_into(new_leaf);
         buffer_pool.mark_dirty(pid);
+        buffer_pool.mark_dirty(new_leaf_pid);
 
         // Insert again (must succeed)
         // todo not sure
         key_type key = std::get<key_type>(t.get_field(key_index));
         if(key < split_key){
             leaf.insert(t);
-            fast_path_max_key = leaf.max_key();
+            fast_path_leaf_id = leaf.page_header->id;
+            fast_path_max_key = split_key - 1;
         }else{
             new_leaf.insert(t);
             fast_path_leaf_id = new_leaf_id;
-            fast_path_max_key = new_leaf.max_key();
+            fast_path_min_key = split_key;
         }
-
 
         internal_insert(path, split_key, new_id);
     }
@@ -398,15 +411,15 @@ private:
         node_id_t node_id = root_id;
 
         while (true) {
-            path.push_back(node_id);
-
             PageId pid{filename, node_id};
             Page &page = buffer_pool.get_mut_page(pid);
-            internal_t node(page);
 
-            if (node.base_header->type != bp_node_type::INTERNAL) {
-                break;
-            }
+            auto* base = reinterpret_cast<BaseHeader*>(page.data());
+
+            if (base->type == bp_node_type::LEAF) break;
+
+            internal_t node(page);
+            path.push_back(node_id);
 
             uint16_t slot = node.child_slot(key);
             node_id = node.children[slot];
@@ -474,10 +487,6 @@ private:
                 return;
             }
 
-            // Node is full, need to split it
-            // std::cout << "Before internal split: " << std::endl;
-            // print();
-
             // Save original size
             uint16_t original_size = node.header->size;
 
@@ -490,7 +499,6 @@ private:
 
             // Prepare split position
             uint16_t split_pos = SPLIT_INTERNAL_POS; // the key at split_pos will be propagated up to parent node
-            new_node.header->id = new_node_id;
 
             // update node sizes
             new_node.header->size = internal_t::internal_capacity - split_pos - 1; // new node get latter half keys
@@ -566,11 +574,12 @@ private:
             // Continue upward with new key and right node
             child_id = new_node_id;
         }
-
         // If we've processed the entire path and still have a key to insert,
         // we need to create a new root
         create_new_root(key, child_id);
 
+        // std::cout << std::endl;
+        //
         // std::cout << "After internal split: " << std::endl;
         // print();
         // std::cout << std::endl;
@@ -579,14 +588,52 @@ private:
     // Create a new root when the height of the tree increases
     // key: key that we want to elect to new node
     // right_child_id: the right subtree id of this key
+
     void create_new_root(const key_type &key, node_id_t right_child_id) {
-    BufferPool &buffer_pool = getDatabase().getBufferPool();
+        BufferPool &buffer_pool = getDatabase().getBufferPool();
+
+        // Get current root
+        PageId root_pid{filename, root_id};
+        Page &old_root_page = buffer_pool.get_mut_page(root_pid);
+        internal_t old_root(old_root_page);
+
+        // print_node(root_id, 0, false);
+
+        // Create new left child by copying current root
+        node_id_t left_child_id = numPages.fetch_add(1);
+        PageId left_pid{filename, left_child_id};
+        Page &left_page = buffer_pool.get_mut_page(left_pid);
+        internal_t left_child(left_page, left_child_id);
+        buffer_pool.mark_dirty(left_pid);
+
+        // Copy contents of old root to left child
+        left_child.copyInfoFrom(old_root);
+
+        // Copy keys and children
+        std::memcpy(left_child.keys, old_root.keys,
+                    old_root.header->size * sizeof(key_type));
+        std::memcpy(left_child.children, old_root.children,
+                    (old_root.header->size + 1) * sizeof(node_id_t));
+
+        // Update old root to become a new root
+        buffer_pool.mark_dirty(root_pid);
+        old_root.header->size = 1;
+        old_root.keys[0] = key;
+        old_root.children[0] = left_child_id;
+        old_root.children[1] = right_child_id;
+
+        // Increase tree height
+        height++;
+    }
+
+    void create_new_root2(const key_type &key, node_id_t right_child_id) {
+        BufferPool &buffer_pool = getDatabase().getBufferPool();
         node_id_t left_child_id = numPages.fetch_add(1);
 
         // Get current root
         PageId root_pid{filename, root_id};
         Page &old_root_page = buffer_pool.get_mut_page(root_pid);
-        internal_t old_root(old_root_page, root_id);
+        internal_t old_root(old_root_page);
 
         // Create new left child by copying current root
         PageId left_pid{filename, left_child_id};
@@ -596,7 +643,7 @@ private:
 
         // Copy contents of old root to left child
         left_child.copyInfoFrom(old_root);
-        left_child.header->id = left_child_id;
+        // left_child.header->id = left_child_id;
 
         if (old_root.base_header->type == bp_node_type::INTERNAL) {
             // Copy keys and children
@@ -660,13 +707,13 @@ private:
 
     // Print a node and its children recursively (for debugging)
     void print_node(node_id_t node_id, int level, bool show_all_values) const {
-        auto &buffer_pool = getDatabase().getBufferPool();
+        BufferPool &buffer_pool = getDatabase().getBufferPool();
         for (int i = 0; i < level; i++) {
             std::cout << "  ";
         }
 
         PageId pid{filename, node_id};
-        Page page = buffer_pool.get_mut_page(pid);
+        Page &page = buffer_pool.get_mut_page(pid);
         uint8_t* raw = page.data();
         auto* base = reinterpret_cast<BaseHeader*>(raw);
 
@@ -697,7 +744,7 @@ private:
             std::cout << "]" << std::endl;
         } else {
             internal_t node(page);
-            std::cout << "Internal ID " << node_id << ": [";
+            std::cout << "Internal ID " << node_id << ", size = " << node.header->size << " : [";
 
             for (uint16_t i = 0; i < node.header->size; i++) {
                 print_field(node.keys[i]);
@@ -724,9 +771,12 @@ private:
 
             std::cout << "]" << std::endl;
 
-            for (uint16_t i = 0; i <= node.header->size; i++) {
-                print_node(node.children[i], level + 1, false);
-            }
+            // for (uint16_t i = 0; i <= node.header->size; i++) {
+            //     print_node(node.children[i], level + 1, false);
+            // }
+            // print 1st and last child
+            print_node(node.children[0], level + 1, false);
+            print_node(node.children[node.header->size], level + 1, false);
         }
     }
 };

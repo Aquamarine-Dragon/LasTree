@@ -113,6 +113,7 @@ public:
         uint16_t left = 0, right = page_header->slot_count;
         while (left < right) {
             uint16_t mid = (left + right) / 2;
+            Slot cur = slots[mid];
             if (!slots[mid].valid) {
                 ++left;
                 continue;
@@ -230,7 +231,7 @@ public:
 
     std::pair<key_type, node_id_type> split_into(LeafNode &new_leaf) {
         // 2. Decide how much to move
-        size_t total_bytes = block_size - free_space();
+        size_t total_bytes = block_size - page_header->heap_end;
         size_t moved = 0;
         // size_t i = 0;
         int i = static_cast<int>(page_header->slot_count - 1);
@@ -240,15 +241,9 @@ public:
         for (; i >= 0; --i) {
             const auto &slot = slots[i];
             if (!slot.valid) continue;
-            moved += slot.length + sizeof(Slot);
+            moved += slot.length;
             if (moved >= total_bytes / 4) break;
         }
-        // for (; i < page_header->slot_count; ++i) {
-        //     const auto &slot = slots[i];
-        //     if (!slot.valid) continue;
-        //     moved += slot.length + sizeof(Slot);
-        //     if (moved >= total_bytes / 4) break;
-        // }
 
         // move those slots to new_leaf
         for (size_t j = i + 1; j < page_header->slot_count; ++j) {
@@ -257,8 +252,9 @@ public:
 
             Tuple t = td.deserialize(buffer + slot.offset);
             new_leaf.insert(t);
-            slots[j].valid = false;
+            // slots[j].valid = false;
             --page_header->size;
+            --(page_header->slot_count);
         }
 
         // update next pointers

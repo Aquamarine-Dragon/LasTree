@@ -21,12 +21,11 @@ size_t BufferPool::fetch_slot() {
         return slot;
     }
 
+    // no available slots, evict
     size_t slot = lru.back();
-    if (!slot_to_id.contains(slot)) {
-        throw std::runtime_error("fetch_slot: slot not found in slot_to_id!");
-    }
     const PageId& old_id = slot_to_id.at(slot);
     evict(old_id);
+    free_list.pop_back();// reserve the slot
     return slot;
 }
 
@@ -73,10 +72,9 @@ void BufferPool::flush(const PageId& id) {
         throw std::runtime_error("flush: PageId not found in pid_to_slot!");
     }
     size_t slot = pid_to_slot.at(id);
-    if (!dirty_slots.contains(slot)) return;
+    if (dirty_slots.erase(slot) == 0) return;
     const Page &page = pages[slot];
     getDatabase().get(id.file).writePage(page, id.page);
-    dirty_slots.erase(slot);
 }
 
 void BufferPool::flush_all() {
@@ -109,6 +107,7 @@ void BufferPool::evict(const PageId& id) {
     if (dirty_slots.contains(slot)) {
         flush(id);
     }
+    // clean page, discard
     pid_to_slot.erase(id);
     slot_to_id.erase(slot);
     lru.erase(slot_lru_map[slot]);
