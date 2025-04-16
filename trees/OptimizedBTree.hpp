@@ -109,19 +109,20 @@ public:
         // }
         std::cout << "inserting " << key << std::endl;
 
-        if (key == 914) {
-            int a = 1;
-        }
+        // if (key == 72) {
+        //     print(true, true);
+        //     int a = 1;
+        // }
 
         // try fast path insertion if key is in the current fast path range
         if (can_use_fast_path(key)) {
             // std::cout << "using fast path" << std::endl;
-            print(true, true);
-            std::cout << std::endl;
-            std::cout << "fast path leaf: " << fast_path_leaf_id << std::endl;
-            std::cout << "fast path min key: " << fast_path_min_key << std::endl;
-            std::cout << "fast path max key: " << fast_path_max_key << std::endl;
             insert_fast_path(tuple, key);
+            // print(true, true);
+            // std::cout << std::endl;
+            // std::cout << "fast path leaf: " << fast_path_leaf_id << std::endl;
+            // std::cout << "fast path min key: " << fast_path_min_key << std::endl;
+            // std::cout << "fast path max key: " << fast_path_max_key << std::endl;
             return;
         }
 
@@ -138,8 +139,22 @@ public:
             buffer_pool.mark_dirty(leaf_pid);
             fast_path_leaf_id = leaf_id;
             fast_path_min_key = leaf.min_key();
-            fast_path_max_key = leaf.max_key();
+            node_id_t next_id = leaf.page_header->meta.next_id;
+            if (next_id == INVALID_NODE_ID) {
+                fast_path_max_key = std::numeric_limits<key_type>::max();
+            }else {
+                Page &next_page = buffer_pool.get_mut_page({filename, next_id});
+                leaf_t next_leaf(next_page, td, key_index);
+                fast_path_max_key = next_leaf.min_key() - 1;
+            }
             size++;
+            // std::cout << std::endl;
+            // std::cout << "fast path updated "<< std::endl;
+            // std::cout << "fast path leaf: " << fast_path_leaf_id << std::endl;
+            // std::cout << "fast path min key: " << fast_path_min_key << std::endl;
+            // std::cout << "fast path max key: " << fast_path_max_key << std::endl;
+            // std::cout << "normal insert" << std::endl;
+            // print(true, true);
             return;
         }
 
@@ -149,7 +164,7 @@ public:
         insert_into_leaf(leaf_pid, tuple, path);
         size++;
         // std::cout << "After leaf split: " << std::endl;
-        // print();
+        // print(true, true);
         // std::cout << std::endl;
     }
 
@@ -345,7 +360,10 @@ private:
         size++;
 
         // todo
-        // std::cout << "After fast path leaf split: " << std::endl;
+        std::cout << "After fast path leaf split: " << std::endl;
+        std::cout << "fast path leaf: " << fast_path_leaf_id << std::endl;
+        std::cout << "fast path min key: " << fast_path_min_key << std::endl;
+        std::cout << "fast path max key: " << fast_path_max_key << std::endl;
         // print(true);
         // std::cout << std::endl;
     }
@@ -362,7 +380,7 @@ private:
         node_id_t new_leaf_id = numPages.fetch_add(1);
         PageId new_leaf_pid{filename, new_leaf_id};
         Page& new_leaf_page = buffer_pool.get_mut_page(new_leaf_pid);
-        // todo also split policy
+        // todo split policy currently sort
         leaf_t new_leaf(new_leaf_page, td, key_index, new_leaf_id, INVALID_NODE_ID, SplitPolicy::SORT,  false);
 
         auto [split_key, new_id] = leaf.split_into(new_leaf);
@@ -370,7 +388,6 @@ private:
         buffer_pool.mark_dirty(new_leaf_pid);
 
         // Insert again (must succeed)
-        // todo not sure
         key_type key = std::get<key_type>(t.get_field(key_index));
         if(key < split_key){
             leaf.insert(t);
@@ -384,24 +401,6 @@ private:
 
         internal_insert(path, split_key, new_id);
     }
-
-
-    // Find the leaf node that should contain the given key
-    // void find_leaf(internal_t &node, const key_type &key) const {
-    //     node_id_t node_id = root_id;
-    //     while (true) {
-    //         PageId pid{filename, node_id};
-    //         Page &page = buffer_pool.get_mut_page(pid);
-    //         node.load(page);
-    //
-    //         if (node.base_header->type != bp_node_type::INTERNAL) {
-    //             break;  // reached leaf
-    //         }
-    //
-    //         uint16_t slot = node.child_slot(key);
-    //         node_id = node.children[slot];
-    //     }
-    // }
 
     // Only returns the leaf node id and path to it
     node_id_t find_leaf(path_t &path, const key_type &key) {

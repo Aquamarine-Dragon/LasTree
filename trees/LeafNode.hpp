@@ -16,7 +16,6 @@ using namespace db;
 template<typename node_id_type, typename key_type, size_t block_size>
 class LeafNode {
 public:
-    static constexpr size_t BLOCK_SIZE = 4096;
     static constexpr size_t MAX_SLOTS = 256;
 
     struct Slot {
@@ -38,8 +37,6 @@ public:
         size_t slot_count;
         size_t heap_end;
     };
-
-    // using Layout = PageLayout<BaseHeader, PageHeader, Slot, MAX_SLOTS, block_size>;
 
     uint8_t *buffer; // address of the page that stores this page
     const TupleDesc &td; // tuple schema of this page
@@ -79,7 +76,6 @@ public:
         page_header->size = 0;
         page_header->slot_count = 0;
         page_header->heap_end = block_size;
-        // heap_end[0] = block_size; // heap grows down
     }
 
     node_id_type get_id() {
@@ -188,6 +184,10 @@ public:
         key_type key = extract_key(t);
         uint16_t insert_pos = value_slot(key);
 
+        // std::cout << "[DEBUG] Before inserting key=" << extract_key(t) << std::endl;
+        // std::cout << "[DEBUG] Before heap end=" << page_header->heap_end << std::endl;
+        // print_page_debug();
+
         page_header->heap_end -= len;
 
         // auto offset = static_cast<uint16_t>(page_header.heap_end);
@@ -204,6 +204,7 @@ public:
         ++page_header->size;
 
         // std::cout << "[DEBUG] After inserting key=" << extract_key(t) << std::endl;
+        // std::cout << "[DEBUG] After heap end=" << page_header->heap_end << std::endl;
         // print_page_debug();
         return true;
     }
@@ -236,6 +237,9 @@ public:
         // size_t i = 0;
         int i = static_cast<int>(page_header->slot_count - 1);
 
+        // std::cout << "[DEBUG] Before heap end=" << page_header->heap_end << std::endl;
+        // print_page_debug();
+
         // find key index which makes moved >= 25%
         // todo modify percentage
         for (; i >= 0; --i) {
@@ -253,9 +257,31 @@ public:
             Tuple t = td.deserialize(buffer + slot.offset);
             new_leaf.insert(t);
             // slots[j].valid = false;
-            --page_header->size;
-            --(page_header->slot_count);
         }
+
+        page_header->size = i + 1;
+        page_header->slot_count = i + 1;
+
+        // Step 1: collect tuples to keep (i.e., slots[0..i])
+        std::vector<Tuple> to_keep;
+        for (size_t k = 0; k <= static_cast<size_t>(i); ++k) {
+            if (!slots[k].valid) continue;
+            Tuple t = td.deserialize(buffer + slots[k].offset);
+            to_keep.push_back(t);
+        }
+
+        // Step 2: reset heap/slot
+        page_header->slot_count = 0;
+        page_header->size = 0;
+        page_header->heap_end = block_size;
+
+        // Step 3: re-insert
+        for (const auto& t : to_keep) {
+            insert(t); // this will update heap_end properly
+        }
+
+        // std::cout << "[DEBUG] After heap end=" << page_header->heap_end << std::endl;
+        // print_page_debug();
 
         // update next pointers
         new_leaf.page_header->meta.next_id = page_header->meta.next_id;
@@ -264,9 +290,9 @@ public:
         return {new_leaf.min_key(), new_leaf.page_header->id};
     }
 
-    bool is_nearly_full() const {
-        return free_space() < 0.1 * block_size;
-    }
+    // bool is_nearly_full() const {
+    //     return free_space() < 0.1 * block_size;
+    // }
 
     bool is_full(const Tuple &t) const {
         return free_space() < td.length(t) + sizeof(Slot);

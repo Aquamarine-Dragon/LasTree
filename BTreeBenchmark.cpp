@@ -44,7 +44,7 @@ void run_benchmark(size_t dataSize) {
     using Buffer = BufferPool;
     using SortPolicy = OptimizedBTree<key_type, LeafNode>::SortPolicy;
 
-    std::vector<double> sortedness_levels = {0.0};
+    std::vector<double> sortedness_levels = {1.0, 0.0};
     // std::vector<double> sortedness_levels = {1.0, 0.95, 0.8, 0.5, 0.2, 0.0};
     std::vector<double> read_ratios = {0.0, 0.1, 0.5};
 
@@ -128,9 +128,6 @@ void run_benchmark(size_t dataSize) {
 
                 t0 = std::chrono::high_resolution_clock::now();
                 for (key_type k: read_keys) {
-                    if (k == 317) {
-                        int b = 1;
-                    }
 
                     auto val = tree.get(k);
                     if (!val.has_value()) throw std::runtime_error("Missing key in optimized tree");
@@ -146,35 +143,35 @@ void run_benchmark(size_t dataSize) {
                 });
             }
 
-            // === Benchmark 3: OptimizedBTree with LeafNodeLSM ===
-            // {
-            //     const char *name = "lsm.db";
-            //     std::remove(name);
-            //     db::getDatabase().add(
-            //         std::make_unique<OptimizedBTree<key_type, LeafNodeLSM> >(
-            //             OptimizedBTree<key_type, LeafNodeLSM>::SORT_ON_SPLIT, 0, name, td));
-            //     auto &tree = db::getDatabase().get(name);
-            //     tree.init();
-            //
-            //     auto t0 = std::chrono::high_resolution_clock::now();
-            //     for (const auto &tup: tuples) tree.insert(tup);
-            //     auto t1 = std::chrono::high_resolution_clock::now();
-            //     auto insert_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
-            //
-            //     t0 = std::chrono::high_resolution_clock::now();
-            //     for (key_type k: read_keys) {
-            //         auto val = tree.get(k);
-            //         if (!val.has_value()) throw std::runtime_error("Missing key in LSM tree");
-            //     }
-            //     t1 = std::chrono::high_resolution_clock::now();
-            //     auto search_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
-            //
-            //     auto *tree_ptr = dynamic_cast<OptimizedBTree<key_type, LeafNodeLSM> *>(&tree);
-            //     if (!tree_ptr) throw std::runtime_error("Failed to cast BaseFile to OptimizedBTree");
-            //     results.push_back({
-            //         "LSMTree", sortedness, read_ratio, insert_time, search_time, 0, tree_ptr->get_fast_path_hits()
-            //     });
-            // }
+            === Benchmark 3: OptimizedBTree with LeafNodeLSM ===
+            {
+                const char *name = "lsm.db";
+                std::remove(name);
+                db::getDatabase().add(
+                    std::make_unique<OptimizedBTree<key_type, LeafNodeLSM> >(
+                        OptimizedBTree<key_type, LeafNodeLSM>::SORT_ON_SPLIT, 0, name, td));
+                auto &tree = db::getDatabase().get(name);
+                tree.init();
+
+                auto t0 = std::chrono::high_resolution_clock::now();
+                for (const auto &tup: tuples) tree.insert(tup);
+                auto t1 = std::chrono::high_resolution_clock::now();
+                auto insert_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+                t0 = std::chrono::high_resolution_clock::now();
+                for (key_type k: read_keys) {
+                    auto val = tree.get(k);
+                    if (!val.has_value()) throw std::runtime_error("Missing key in LSM tree");
+                }
+                t1 = std::chrono::high_resolution_clock::now();
+                auto search_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+                auto *tree_ptr = dynamic_cast<OptimizedBTree<key_type, LeafNodeLSM> *>(&tree);
+                if (!tree_ptr) throw std::runtime_error("Failed to cast BaseFile to OptimizedBTree");
+                results.push_back({
+                    "LSMTree", sortedness, read_ratio, insert_time, search_time, 0, tree_ptr->get_fast_path_hits()
+                });
+            }
         }
     }
 
