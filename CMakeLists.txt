@@ -20,7 +20,6 @@ add_executable(BPlusTreeOpti
         trees/LeafNode.hpp
         trees/InternalNode.hpp
         trees/LeafNodeLSM.hpp
-        trees/PageLayout.hpp
         trees/BufferPool.hpp
         trees/Database.hpp
         trees/BaseFile.hpp
@@ -41,7 +40,6 @@ add_executable(TreeTest
 #        trees/LeafNode.hpp
 #        trees/InternalNode.hpp
 #        trees/LeafNodeLSM.hpp
-#        trees/PageLayout.hpp
 #        trees/BufferPool.hpp
 #        trees/Database.hpp
 #        trees/BaseFile.hpp

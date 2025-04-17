@@ -3,10 +3,8 @@
 #include <cstdint>
 #include <algorithm>
 #include <vector>
-#include <stdexcept>
 #include <unordered_set>
 #include "NodeTypes.hpp"
-#include "PageLayout.hpp"
 #include "Tuple.hpp"
 
 using namespace db;
@@ -167,12 +165,13 @@ public:
         // update min max key
         key_type key = extract_key(t);
         if (key < page_header->min_key) {
-            min_key = key;
+            page_header->min_key = key;
         }
         if (key > page_header->max_key) {
-            max_key = key;
+            page_header->max_key = key;
         }
-
+        // update to be unsorted
+        page_header->meta.isSorted = false;
         return true;
     }
 
@@ -189,12 +188,12 @@ public:
         const size_t len = td.length(tombstone) + sizeof(OpType);
         if (!can_insert(len)) return false;
 
-        page_header.heap_end -= len;
-        buffer[page_header.heap_end] = static_cast<uint8_t>(OpType::Delete);
-        td.serialize(buffer + page_header.heap_end + sizeof(OpType), tombstone);
+        page_header->heap_end -= len;
+        buffer[page_header->heap_end] = static_cast<uint8_t>(OpType::Delete);
+        td.serialize(buffer + page_header->heap_end + sizeof(OpType), tombstone);
 
         slots[page_header->slot_count] = {
-            static_cast<uint16_t>(page_header.heap_end),
+            static_cast<uint16_t>(page_header->heap_end),
             static_cast<uint16_t>(len)
         };
         ++page_header->size;
@@ -206,8 +205,43 @@ public:
         return true;
     }
 
+    // Binary search based on keys in slots (only usable when leaf is sorted!!!)
+    uint16_t value_slot(const key_type &key) const {
+        // Binary search if sorted
+        uint16_t left = 0, right = page_header->slot_count;
+        while (left < right) {
+            uint16_t mid = (left + right) / 2;
+            Slot cur = slots[mid];
+            if (!slots[mid].valid) {
+                ++left;
+                continue;
+            }
+            Tuple mid_tuple = td.deserialize(buffer + slots[mid].offset);
+            if (extract_key(mid_tuple) < key) left = mid + 1;
+            else right = mid;
+        }
+        return left;
+    }
+
     // Find the most recent value for key (or tombstone)
     std::optional<Tuple> get(const key_type& key) const {
+        // todo sorted, O(log n)
+        // if (page_header->meta.isSorted){
+        //     uint16_t index = value_slot(key);
+        //
+        //     if (index < page_header->slot_count) {
+        //         const Slot &slot = slots[index];
+        //         if (op == OpType::Delete) return std::nullopt;
+        //
+        //         Tuple t = td.deserialize(buffer + slot.offset);
+        //         if (extract_key(t) == key) {
+        //             return t;
+        //         }
+        //     }
+        //     return std::nullopt;
+        // }
+
+        // unsorted, O(n)
         for (int i = static_cast<int>(page_header->slot_count) - 1; i >= 0; --i) {
             const Slot& slot = slots[i];
             OpType op = static_cast<OpType>(buffer[slot.offset]);
@@ -258,7 +292,7 @@ public:
         return keys[mid];
     }
 
-    std::pair<key_type, node_id_type> split_into(LeafNodeLSM& new_leaf) {
+    key_type split_into(LeafNodeLSM& new_leaf) {
         // compact
         std::vector<Tuple> compacted = compact();
 
@@ -266,6 +300,8 @@ public:
         page_header->slot_count = 0;
         page_header->heap_end = block_size;
         page_header->size = 0;
+        page_header->min_key = std::numeric_limits<key_type>::max();
+        page_header->max_key = std::numeric_limits<key_type>::min();
 
         // split
         if (page_header->split_strategy == SplitPolicy::QUICK_PARTITION) {
@@ -277,6 +313,10 @@ public:
                 else
                     new_leaf.insert(t); // to new page
             }
+            // restore linked list
+            new_leaf.page_header->meta.next_id = page_header->meta.next_id;
+            page_header->meta.next_id = new_leaf.page_header->id;
+            return split_key;
         }else {
             // policy 2: sort on split
             std::sort(compacted.begin(), compacted.end(), [&](const Tuple& a, const Tuple& b) {
@@ -286,12 +326,15 @@ public:
             size_t half = compacted.size() * 3 / 4;
             for (size_t i = 0; i < half; ++i) insert(compacted[i]);
             for (size_t i = half; i < compacted.size(); ++i) new_leaf.insert(compacted[i]);
-        }
-        // restore linked list
-        new_leaf.page_header->meta.next_id = page_header->meta.next_id;
-        page_header->meta.next_id = new_leaf.page_header->id;
+            page_header->meta.isSorted = true;
+            new_leaf.page_header->meta.isSorted = true;
 
-        return { new_leaf.min_key(), new_leaf.page_header->id };
+            // restore linked list
+            new_leaf.page_header->meta.next_id = page_header->meta.next_id;
+            page_header->meta.next_id = new_leaf.page_header->id;
+
+            return new_leaf.min_key();
+        }
     }
 
     void compute_min_max() {

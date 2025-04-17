@@ -29,7 +29,7 @@ namespace db {
 
         BaseFile &get(const std::string &name) const;
 
-        std::unique_ptr<BaseFile> remove(const std::string &name);
+        // std::unique_ptr<BaseFile> remove(const std::string &name);
     };
 
     Database& getDatabase();

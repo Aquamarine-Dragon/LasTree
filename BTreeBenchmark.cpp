@@ -44,8 +44,8 @@ void run_benchmark(size_t dataSize) {
     using Buffer = BufferPool;
     using SortPolicy = OptimizedBTree<key_type, LeafNode>::SortPolicy;
 
-    std::vector<double> sortedness_levels = {1.0, 0.0};
-    // std::vector<double> sortedness_levels = {1.0, 0.95, 0.8, 0.5, 0.2, 0.0};
+    // std::vector<double> sortedness_levels = {1.0, 0,0};
+    std::vector<double> sortedness_levels = {1.0, 0.95, 0.8, 0.5, 0.2, 0.0};
     std::vector<double> read_ratios = {0.0, 0.1, 0.5};
 
     std::vector<ResultRow> results;
@@ -57,6 +57,8 @@ void run_benchmark(size_t dataSize) {
             // generate keys
             std::vector<key_type> keys(dataSize);
             std::iota(keys.begin(), keys.end(), 0);
+
+            std::vector<key_type> test_read_keys = keys;
 
             if (sortedness < 1.0) {
                 size_t shuffle_count = static_cast<size_t>(dataSize * (1.0 - sortedness));
@@ -81,31 +83,31 @@ void run_benchmark(size_t dataSize) {
                         static_cast<size_t>(dataSize * read_ratio), std::mt19937(42));
 
             // === Benchmark 1: SimpleBPlusTree ===
-            // {
-            //     const char *name = "simple.db";
-            //     std::remove(name);
-            //     getDatabase().add(std::make_unique<SimpleBPlusTree<key_type> >(name, td, 0));
-            //     auto &tree = db::getDatabase().get(name);
-            //     tree.init();
-            //
-            //     auto t0 = std::chrono::high_resolution_clock::now();
-            //     for (const auto &tup: tuples) {
-            //         tree.insert(tup);
-            //     }
-            //
-            //     auto t1 = std::chrono::high_resolution_clock::now();
-            //     auto insert_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
-            //
-            //     t0 = std::chrono::high_resolution_clock::now();
-            //     for (key_type k: read_keys) {
-            //         auto val = tree.get(k);
-            //         if (!val.has_value()) throw std::runtime_error("Missing key in simple tree");
-            //     }
-            //     t1 = std::chrono::high_resolution_clock::now();
-            //     auto search_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
-            //
-            //     results.push_back({"SimpleBPlusTree", sortedness, read_ratio, insert_time, search_time, 0, 0});
-            // }
+            {
+                const char *name = "simple.db";
+                std::remove(name);
+                getDatabase().add(std::make_unique<SimpleBPlusTree<key_type> >(name, td, 0));
+                auto &tree = db::getDatabase().get(name);
+                tree.init();
+
+                auto t0 = std::chrono::high_resolution_clock::now();
+                for (const auto &tup: tuples) {
+                    tree.insert(tup);
+                }
+
+                auto t1 = std::chrono::high_resolution_clock::now();
+                auto insert_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+                t0 = std::chrono::high_resolution_clock::now();
+                for (key_type k: read_keys) {
+                    auto val = tree.get(k);
+                    if (!val.has_value()) throw std::runtime_error("Missing key in simple tree");
+                }
+                t1 = std::chrono::high_resolution_clock::now();
+                auto search_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+                results.push_back({"SimpleBPlusTree", sortedness, read_ratio, insert_time, search_time, 0, 0});
+            }
 
             // === Benchmark 2: OptimizedBTree with LeafNode ===
             {
@@ -132,6 +134,10 @@ void run_benchmark(size_t dataSize) {
                     auto val = tree.get(k);
                     if (!val.has_value()) throw std::runtime_error("Missing key in optimized tree");
                 }
+                // for (key_type k: test_read_keys) {
+                //     auto val = tree.get(k);
+                //     if (!val.has_value()) throw std::runtime_error("Missing key in LSM tree");
+                // }
                 t1 = std::chrono::high_resolution_clock::now();
                 auto search_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
@@ -143,7 +149,7 @@ void run_benchmark(size_t dataSize) {
                 });
             }
 
-            === Benchmark 3: OptimizedBTree with LeafNodeLSM ===
+            // === Benchmark 3: OptimizedBTree with LeafNodeLSM ===
             {
                 const char *name = "lsm.db";
                 std::remove(name);
@@ -154,11 +160,17 @@ void run_benchmark(size_t dataSize) {
                 tree.init();
 
                 auto t0 = std::chrono::high_resolution_clock::now();
-                for (const auto &tup: tuples) tree.insert(tup);
+                for (const auto &tup: tuples) {
+                    tree.insert(tup);
+                }
                 auto t1 = std::chrono::high_resolution_clock::now();
                 auto insert_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
                 t0 = std::chrono::high_resolution_clock::now();
+                // for (key_type k: test_read_keys) {
+                //     auto val = tree.get(k);
+                //     if (!val.has_value()) throw std::runtime_error("Missing key in LSM tree");
+                // }
                 for (key_type k: read_keys) {
                     auto val = tree.get(k);
                     if (!val.has_value()) throw std::runtime_error("Missing key in LSM tree");

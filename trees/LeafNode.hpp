@@ -5,7 +5,6 @@
 #include <vector>
 #include <stdexcept>
 #include "NodeTypes.hpp"
-#include "PageLayout.hpp"
 #include "Tuple.hpp"
 
 using namespace db;
@@ -96,15 +95,6 @@ public:
 
     // Binary search based on keys in slots
     uint16_t value_slot(const key_type &key) const {
-        if (!page_header->meta.isSorted) {
-            for (uint16_t i = 0; i < page_header->slot_count; ++i) {
-                if (!slots[i].valid) continue;
-                Tuple t = td.deserialize(buffer + slots[i].offset);
-                if (extract_key(t) >= key) return i;
-            }
-            return page_header->slot_count;
-        }
-
         // Binary search if sorted
         uint16_t left = 0, right = page_header->slot_count;
         while (left < right) {
@@ -124,6 +114,10 @@ public:
     std::optional<Tuple> get(const key_type &key) const {
         uint16_t index = value_slot(key);
 
+        // if (key == 46) {
+        //     int a = 1;
+        //     print_page_debug();
+        // }
         if (index < page_header->slot_count) {
             const Slot &slot = slots[index];
             if (!slot.valid) return std::nullopt;
@@ -230,7 +224,7 @@ public:
         return insert(t);
     }
 
-    std::pair<key_type, node_id_type> split_into(LeafNode &new_leaf) {
+    key_type split_into(LeafNode &new_leaf) {
         // 2. Decide how much to move
         size_t total_bytes = block_size - page_header->heap_end;
         size_t moved = 0;
@@ -287,7 +281,7 @@ public:
         new_leaf.page_header->meta.next_id = page_header->meta.next_id;
         page_header->meta.next_id = new_leaf.page_header->id;
 
-        return {new_leaf.min_key(), new_leaf.page_header->id};
+        return new_leaf.min_key();
     }
 
     // bool is_nearly_full() const {

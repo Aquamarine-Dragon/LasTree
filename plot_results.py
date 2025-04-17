@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # Load CSV data
-csv_file = "build/btree_benchmark_results.csv"  # Set default path
+csv_file = "build/btree_benchmark.csv"  # Set default path
 data = pd.read_csv(csv_file)
 
 # Add derived column for display
