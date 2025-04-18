@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <algorithm>
+#include <random>
 #include <vector>
 #include <unordered_set>
 #include "NodeTypes.hpp"
@@ -13,7 +14,7 @@ using namespace db;
  * A LeafNode implementation for an append-only, LSM-like B+Tree node.
  * Supports insert and delete by appending new tuples with OpType.
  */
-template <typename node_id_type, typename key_type, size_t block_size>
+template <typename node_id_type, typename key_type, size_t split_per, size_t block_size>
 class LeafNodeLSM {
 public:
     static constexpr size_t MAX_SLOTS = 256;
@@ -176,7 +177,11 @@ public:
     }
 
     bool update(const Tuple& t) {
-        return insert(t); // Simply append a new version
+        if (insert(t)) {// Simply append a new version
+            ++page_header->size; // update does not count for size
+            return true;
+        }
+        return false;
     }
 
     // Append a delete marker
@@ -196,7 +201,7 @@ public:
             static_cast<uint16_t>(page_header->heap_end),
             static_cast<uint16_t>(len)
         };
-        ++page_header->size;
+        --page_header->size;
         ++page_header->slot_count;
 
         if (key == page_header->min_key || key == page_header->max_key) {
@@ -212,11 +217,7 @@ public:
         while (left < right) {
             uint16_t mid = (left + right) / 2;
             Slot cur = slots[mid];
-            if (!slots[mid].valid) {
-                ++left;
-                continue;
-            }
-            Tuple mid_tuple = td.deserialize(buffer + slots[mid].offset);
+            Tuple mid_tuple = td.deserialize(buffer + slots[mid].offset+ sizeof(OpType));
             if (extract_key(mid_tuple) < key) left = mid + 1;
             else right = mid;
         }
@@ -225,21 +226,20 @@ public:
 
     // Find the most recent value for key (or tombstone)
     std::optional<Tuple> get(const key_type& key) const {
-        // todo sorted, O(log n)
-        // if (page_header->meta.isSorted){
-        //     uint16_t index = value_slot(key);
-        //
-        //     if (index < page_header->slot_count) {
-        //         const Slot &slot = slots[index];
-        //         if (op == OpType::Delete) return std::nullopt;
-        //
-        //         Tuple t = td.deserialize(buffer + slot.offset);
-        //         if (extract_key(t) == key) {
-        //             return t;
-        //         }
-        //     }
-        //     return std::nullopt;
-        // }
+
+        // sorted and deduped, no delete, O(log n)
+        if (page_header->meta.isSorted){
+            uint16_t index = value_slot(key);
+
+            if (index < page_header->slot_count) {
+                const Slot &slot = slots[index];
+                Tuple t = td.deserialize(buffer + slot.offset+ sizeof(OpType));
+                if (extract_key(t) == key) {
+                    return t;
+                }
+            }
+            return std::nullopt;
+        }
 
         // unsorted, O(n)
         for (int i = static_cast<int>(page_header->slot_count) - 1; i >= 0; --i) {
@@ -258,10 +258,6 @@ public:
         const Slot &slot = slots[i];
         return td.deserialize(buffer + slot.offset + sizeof(OpType));
     }
-
-    // bool is_nearly_full() const {
-    //     return free_space() < BLOCK_SIZE * 0.1;
-    // }
 
     std::vector<Tuple> compact() {
         std::vector<Tuple> compacted;
@@ -284,14 +280,6 @@ public:
         return compacted;
     }
 
-    key_type choose_split_key(const std::vector<Tuple>& tuples) {
-        std::vector<key_type> keys;
-        for (const auto& t : tuples) keys.push_back(extract_key(t));
-        size_t mid = keys.size() * 3 / 4;
-        std::nth_element(keys.begin(), keys.begin() + mid, keys.end());
-        return keys[mid];
-    }
-
     key_type split_into(LeafNodeLSM& new_leaf) {
         // compact
         std::vector<Tuple> compacted = compact();
@@ -306,7 +294,8 @@ public:
         // split
         if (page_header->split_strategy == SplitPolicy::QUICK_PARTITION) {
             // policy 1: quick partition by split key
-            key_type split_key = choose_split_key(compacted);
+            size_t idx = compacted.size() * 3 / 4;
+            key_type split_key = extract_key(compacted[idx]);
             for (const Tuple& t : compacted) {
                 if (extract_key(t) < split_key)
                     this->insert(t); // back to old page

@@ -1,40 +1,71 @@
 import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
 
-# Load CSV data
-csv_file = "build/btree_benchmark.csv"  # Set default path
+# Load CSV
+csv_file = "build/btree_benchmark.csv"
 data = pd.read_csv(csv_file)
 
-# Add derived column for display
+# Add percentage column
 data['Sortedness_Percent'] = data['Sortedness'] * 100
 
-# Plot metric vs. sortedness for each read ratio and tree type
-def plot_metric_by_read_ratio(data, metric, ylabel, title, filename):
+# Set hatch patterns for different tree types
+patterns = {
+    "LSMQPTree": '',              # solid
+    "LSMSORTTree": 'xxx',         # cross hatch
+    "OptimizedBTree": '...',      # dotted
+    "SimpleBPlusTree": '///',     # slanted
+}
+
+colors = {
+    "LSMQPTree": '#B494AB',
+    "LSMSORTTree": '#B4AEB2',
+    "OptimizedBTree": '#74B488',
+    "SimpleBPlusTree": '#6AA4B4',
+}
+
+def plot_metric_by_read_ratio(data, metric, ylabel, title, filename, bar_unit_scale=1.0):
     read_ratios = sorted(data['ReadRatio'].unique())
     tree_types = sorted(data['TreeType'].unique())
+    sortedness = sorted(data['Sortedness_Percent'].unique())
 
-    plt.figure(figsize=(12, 4 * len(read_ratios)))
+    x = np.arange(len(sortedness))
+    width = 0.15
+
+    plt.figure(figsize=(14, 5 * len(read_ratios)))
 
     for i, ratio in enumerate(read_ratios, 1):
-        plt.subplot(len(read_ratios), 1, i)
-        for tree in tree_types:
-            subset = data[(data['ReadRatio'] == ratio) & (data['TreeType'] == tree)]
-            plt.plot(subset['Sortedness_Percent'], subset[metric], marker='o', label=tree)
-        plt.title(f"{title} (ReadRatio={ratio:.1f})")
-        plt.xlabel('Sortedness (%)')
-        plt.ylabel(ylabel)
-        plt.grid(True)
-        plt.legend()
+        ax = plt.subplot(len(read_ratios), 1, i)
+        for j, tree in enumerate(tree_types):
+            subset = data[(data['ReadRatio'] == ratio) & (data['TreeType'] == tree)].sort_values("Sortedness_Percent")
+            bar_vals = subset[metric].values / bar_unit_scale
+            bars = plt.bar(
+                x + j * width,
+                bar_vals,
+                width,
+                label=tree,
+                hatch=patterns.get(tree, ''),
+                edgecolor='black',
+                color=colors.get(tree, 'gray')
+            )
+
+        ax.set_xticks(x + width * (len(tree_types) - 1) / 2)
+        ax.set_xticklabels([f"{int(s)}" for s in sortedness])
+        ax.set_title(f"{title} (ReadRatio={ratio:.1f})")
+        ax.set_xlabel('% Sortedness')
+        ax.set_ylabel(ylabel)
+        ax.legend()
+        ax.grid(True, axis='y')
 
     plt.tight_layout()
     plt.savefig(filename)
     print(f"Saved plot to: {filename}")
-    plt.show()
+    # plt.show()
 
-# Generate plots
-plot_metric_by_read_ratio(data, 'InsertTime', 'Insert Time (ms)', 'Insert Performance', 'insert_performance.png')
-plot_metric_by_read_ratio(data, 'SearchTime', 'Search Time (ms)', 'Search Performance', 'search_performance.png')
-plot_metric_by_read_ratio(data, 'NodeCount', 'Node Count', 'Node Usage', 'node_count.png')
+# Adjust FastPathHits to percentage (given 100000 inserts)
+data['FastPathHits'] = data['FastPathHits'] / 1000.0
 
-if 'FastPathHits' in data.columns:
-    plot_metric_by_read_ratio(data, 'FastPathHits', 'Fast Path Hits', 'Fast Path Usage', 'fast_path_hits.png')
+# Plot
+plot_metric_by_read_ratio(data, 'InsertTime', 'Insert Time (ms)', 'Insert Performance', 'styled_insert_performance.png')
+plot_metric_by_read_ratio(data, 'SearchTime', 'Search Time (ms)', 'Search Performance', 'styled_search_performance.png')
+plot_metric_by_read_ratio(data, 'FastPathHits', 'Fast Path Hit (%)', 'Fast Path Usage', 'styled_fast_path_hits.png', bar_unit_scale=1.0)

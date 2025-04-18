@@ -55,7 +55,6 @@ Page& BufferPool::get_mut_page(const PageId& pid) {
 
     lru.push_front(slot);
     slot_lru_map[slot] = lru.begin();
-
     return page;
 }
 

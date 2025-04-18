@@ -12,7 +12,7 @@ using namespace db;
 /**
  * A LeafNode implementation for sorted tree node
  */
-template<typename node_id_type, typename key_type, size_t block_size>
+template<typename node_id_type, typename key_type, size_t split_per, size_t block_size>
 class LeafNode {
 public:
     static constexpr size_t MAX_SLOTS = 256;
@@ -114,10 +114,6 @@ public:
     std::optional<Tuple> get(const key_type &key) const {
         uint16_t index = value_slot(key);
 
-        // if (key == 46) {
-        //     int a = 1;
-        //     print_page_debug();
-        // }
         if (index < page_header->slot_count) {
             const Slot &slot = slots[index];
             if (!slot.valid) return std::nullopt;
@@ -225,10 +221,9 @@ public:
     }
 
     key_type split_into(LeafNode &new_leaf) {
-        // 2. Decide how much to move
+        // Decide how much to move
         size_t total_bytes = block_size - page_header->heap_end;
         size_t moved = 0;
-        // size_t i = 0;
         int i = static_cast<int>(page_header->slot_count - 1);
 
         // std::cout << "[DEBUG] Before heap end=" << page_header->heap_end << std::endl;
@@ -240,7 +235,7 @@ public:
             const auto &slot = slots[i];
             if (!slot.valid) continue;
             moved += slot.length;
-            if (moved >= total_bytes / 4) break;
+            if (moved >= total_bytes / split_per) break;
         }
 
         // move those slots to new_leaf

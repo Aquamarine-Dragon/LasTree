@@ -22,12 +22,12 @@
 using namespace db;
 
 // SimpleBPlusTree - Basic B+tree implementation using memory blocks
-template<typename key_type>
+template<typename key_type, size_t split_percentage>
 class SimpleBPlusTree : public BaseFile {
 public:
     // Type aliases for readability
     using node_id_t = uint32_t;
-    using leaf_t = LeafNode<node_id_t, key_type, db::DEFAULT_PAGE_SIZE>;
+    using leaf_t = LeafNode<node_id_t, key_type, split_percentage,  db::DEFAULT_PAGE_SIZE>;
     using internal_t = InternalNode<node_id_t, key_type, db::DEFAULT_PAGE_SIZE>;
     // using buffer_pool_t = BufferPoolType<64>;
     using path_t = std::vector<node_id_t>;
@@ -76,7 +76,7 @@ public:
         path_t path;
         key_type key = std::get<key_type>(tuple.get_field(key_index));
 
-        std::cout << "inserting " << key << std::endl;
+        // std::cout << "inserting " << key << std::endl;
 
         node_id_t leaf_id = find_leaf(path, key);
         PageId leaf_pid{filename, leaf_id};
@@ -106,24 +106,6 @@ public:
 
         return leaf.get(actual_key);
     }
-
-
-    // Update an existing key with a new value
-    // bool update(const key_type& key, const value_type& value) {
-    //     node_t leaf;
-    //     find_leaf(leaf, key);
-    //
-    //     uint16_t index = leaf.value_slot(key);
-    //     if (index >= leaf.info->size || leaf.keys[index] != key) {
-    //         return false;
-    //     }
-    //
-    //     block_manager.mark_dirty(leaf.info->id);
-    //     leaf.values[index] = value;
-    //     return true;
-    // }
-
-    // Print the tree structure (for debugging)
 
 
     // Get the number of elements in the tree

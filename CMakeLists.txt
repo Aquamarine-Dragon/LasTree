@@ -27,26 +27,6 @@ add_executable(BPlusTreeOpti
         trees/BufferPool.cpp
 )
 
-#add_executable(BPlusTreeOpti
-#        BTreeBenchmark.cpp
-#        trees/Database.cpp
-#)
-
-# Test executable
-add_executable(TreeTest
-        test_trees.cpp
-#        trees/Tuple.hpp
-#        trees/Types.hpp
-#        trees/LeafNode.hpp
-#        trees/InternalNode.hpp
-#        trees/LeafNodeLSM.hpp
-#        trees/BufferPool.hpp
-#        trees/Database.hpp
-#        trees/BaseFile.hpp
-        trees/Database.cpp
-        trees/BufferPool.cpp
-)
-
 # Add optional secondary index test program if desired
 # add_executable(btree_secondary_index secondary_index.cpp)
 

@@ -42,7 +42,6 @@ void run_benchmark(size_t dataSize) {
     using key_type = int;
     using TupleT = db::Tuple;
     using Buffer = BufferPool;
-    using SortPolicy = OptimizedBTree<key_type, LeafNode>::SortPolicy;
 
     // std::vector<double> sortedness_levels = {1.0, 0,0};
     std::vector<double> sortedness_levels = {1.0, 0.95, 0.8, 0.5, 0.2, 0.0};
@@ -58,7 +57,6 @@ void run_benchmark(size_t dataSize) {
             std::vector<key_type> keys(dataSize);
             std::iota(keys.begin(), keys.end(), 0);
 
-            std::vector<key_type> test_read_keys = keys;
 
             if (sortedness < 1.0) {
                 size_t shuffle_count = static_cast<size_t>(dataSize * (1.0 - sortedness));
@@ -86,7 +84,7 @@ void run_benchmark(size_t dataSize) {
             {
                 const char *name = "simple.db";
                 std::remove(name);
-                getDatabase().add(std::make_unique<SimpleBPlusTree<key_type> >(name, td, 0));
+                getDatabase().add(std::make_unique<SimpleBPlusTree<key_type, 2> >(name, td, 0));
                 auto &tree = db::getDatabase().get(name);
                 tree.init();
 
@@ -112,12 +110,11 @@ void run_benchmark(size_t dataSize) {
             // === Benchmark 2: OptimizedBTree with LeafNode ===
             {
                 const char *name = "opt.db";
-
                 // getDatabase().remove(name);
                 std::remove(name);
                 db::getDatabase().add(
-                    std::make_unique<OptimizedBTree<key_type, LeafNode> >(
-                        OptimizedBTree<key_type, LeafNode>::SORT_ON_SPLIT, 0, name, td));
+                    std::make_unique<OptimizedBTree<key_type, LeafNode, 4>>(
+                        SplitPolicy::SORT, 0, name, td));
                 auto &tree = db::getDatabase().get(name);
                 tree.init();
 
@@ -134,14 +131,10 @@ void run_benchmark(size_t dataSize) {
                     auto val = tree.get(k);
                     if (!val.has_value()) throw std::runtime_error("Missing key in optimized tree");
                 }
-                // for (key_type k: test_read_keys) {
-                //     auto val = tree.get(k);
-                //     if (!val.has_value()) throw std::runtime_error("Missing key in LSM tree");
-                // }
                 t1 = std::chrono::high_resolution_clock::now();
                 auto search_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-                auto *tree_ptr = dynamic_cast<OptimizedBTree<key_type, LeafNode> *>(&tree);
+                auto *tree_ptr = dynamic_cast<OptimizedBTree<key_type, LeafNode, 4> *>(&tree);
                 if (!tree_ptr) throw std::runtime_error("Failed to cast BaseFile to OptimizedBTree");
                 results.push_back({
                     "OptimizedBTree", sortedness, read_ratio, insert_time, search_time, 0,
@@ -154,8 +147,8 @@ void run_benchmark(size_t dataSize) {
                 const char *name = "lsm.db";
                 std::remove(name);
                 db::getDatabase().add(
-                    std::make_unique<OptimizedBTree<key_type, LeafNodeLSM> >(
-                        OptimizedBTree<key_type, LeafNodeLSM>::SORT_ON_SPLIT, 0, name, td));
+                    std::make_unique<OptimizedBTree<key_type, LeafNodeLSM, 4> >(
+                        SplitPolicy::SORT, 0, name, td));
                 auto &tree = db::getDatabase().get(name);
                 tree.init();
 
@@ -167,10 +160,6 @@ void run_benchmark(size_t dataSize) {
                 auto insert_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
                 t0 = std::chrono::high_resolution_clock::now();
-                // for (key_type k: test_read_keys) {
-                //     auto val = tree.get(k);
-                //     if (!val.has_value()) throw std::runtime_error("Missing key in LSM tree");
-                // }
                 for (key_type k: read_keys) {
                     auto val = tree.get(k);
                     if (!val.has_value()) throw std::runtime_error("Missing key in LSM tree");
@@ -178,10 +167,42 @@ void run_benchmark(size_t dataSize) {
                 t1 = std::chrono::high_resolution_clock::now();
                 auto search_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-                auto *tree_ptr = dynamic_cast<OptimizedBTree<key_type, LeafNodeLSM> *>(&tree);
+                auto *tree_ptr = dynamic_cast<OptimizedBTree<key_type, LeafNodeLSM, 4> *>(&tree);
                 if (!tree_ptr) throw std::runtime_error("Failed to cast BaseFile to OptimizedBTree");
                 results.push_back({
-                    "LSMTree", sortedness, read_ratio, insert_time, search_time, 0, tree_ptr->get_fast_path_hits()
+                    "LSMSORTTree", sortedness, read_ratio, insert_time, search_time, 0, tree_ptr->get_fast_path_hits()
+                });
+            }
+
+            // === Benchmark 4: OptimizedBTree with LeafNodeLSM (quick partition) ===
+            {
+                const char *name = "lsm_qp.db";
+                std::remove(name);
+                db::getDatabase().add(
+                    std::make_unique<OptimizedBTree<key_type, LeafNodeLSM, 4> >(
+                        SplitPolicy::QUICK_PARTITION, 0, name, td));
+                auto &tree = db::getDatabase().get(name);
+                tree.init();
+
+                auto t0 = std::chrono::high_resolution_clock::now();
+                for (const auto &tup: tuples) {
+                    tree.insert(tup);
+                }
+                auto t1 = std::chrono::high_resolution_clock::now();
+                auto insert_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+                t0 = std::chrono::high_resolution_clock::now();
+                for (key_type k: read_keys) {
+                    auto val = tree.get(k);
+                    if (!val.has_value()) throw std::runtime_error("Missing key in LSM tree");
+                }
+                t1 = std::chrono::high_resolution_clock::now();
+                auto search_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+                auto *tree_ptr = dynamic_cast<OptimizedBTree<key_type, LeafNodeLSM, 4> *>(&tree);
+                if (!tree_ptr) throw std::runtime_error("Failed to cast BaseFile to OptimizedBTree");
+                results.push_back({
+                    "LSMQPTree", sortedness, read_ratio, insert_time, search_time, 0, tree_ptr->get_fast_path_hits()
                 });
             }
         }

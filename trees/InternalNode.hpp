@@ -48,7 +48,6 @@ public:
         children = reinterpret_cast<node_id_type*>(keys + internal_capacity);
     }
 
-
     uint16_t child_slot(const key_type& key) const {
         auto it = std::upper_bound(keys, keys + header->size, key);
         return std::distance(keys, it);
