@@ -15,7 +15,7 @@ using namespace db;
  * Supports insert and delete by appending new tuples with OpType.
  */
 template <typename node_id_type, typename key_type, size_t split_per, size_t block_size>
-class LeafNodeLSM {
+class AppendOnlyLeafNode {
 public:
     static constexpr size_t MAX_SLOTS = 256;
 
@@ -46,6 +46,8 @@ public:
         size_t heap_end;
     };
 
+    static constexpr uint16_t available_space = block_size - (sizeof(BaseHeader) + sizeof(PageHeader));
+
     uint8_t* buffer;
     const TupleDesc& td;
     size_t key_index{};
@@ -54,10 +56,10 @@ public:
     PageHeader* page_header;
     Slot* slots;
 
-    LeafNodeLSM() = default;
+    AppendOnlyLeafNode() = default;
 
     // constructor that loads from an existing buffer
-    explicit LeafNodeLSM(Page &page, const TupleDesc &td, size_t key_index)
+    explicit AppendOnlyLeafNode(Page &page, const TupleDesc &td, size_t key_index)
     : buffer(page.data()),
         td(td),
           key_index(key_index) {
@@ -66,7 +68,7 @@ public:
         slots = reinterpret_cast<Slot*>(buffer + sizeof(BaseHeader) + sizeof(PageHeader));
     }
 
-    LeafNodeLSM(Page &page, const TupleDesc& desc, size_t key, node_id_type id, node_id_type next_id,  SplitPolicy policy, bool isCold)
+    AppendOnlyLeafNode(Page &page, const TupleDesc& desc, size_t key, node_id_type id, node_id_type next_id,  SplitPolicy policy, bool isCold)
     : buffer(page.data()),
     td(desc),
     key_index(key)
@@ -108,6 +110,9 @@ public:
         return static_cast<OpType>(buffer[slots[i].offset]);
     }
 
+    size_t used_space() const {
+        return block_size - page_header->heap_end + sizeof(Slot) * (page_header->slot_count);
+    }
 
     bool can_insert(size_t tuple_len) const {
         size_t new_offset = page_header->heap_end - tuple_len;
@@ -280,7 +285,7 @@ public:
         return compacted;
     }
 
-    key_type split_into(LeafNodeLSM& new_leaf) {
+    key_type split_into(AppendOnlyLeafNode& new_leaf) {
         // compact
         std::vector<Tuple> compacted = compact();
 

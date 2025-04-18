@@ -12,7 +12,7 @@
 #include "SimpleBPlusTree.hpp"
 #include "OptimizedBTree.hpp"
 #include "LeafNode.hpp"
-#include "LeafNodeLSM.hpp"
+#include "AppendOnlyLeafNode.hpp"
 
 constexpr size_t POOL_SIZE = 64;
 constexpr size_t PAGE_SIZE = 4096;
@@ -29,7 +29,8 @@ struct ResultRow {
     double read_ratio;
     double insert_time_ms;
     double search_time_ms;
-    size_t node_count;
+    size_t leaf_count;
+    double leaf_utilization;
     size_t fast_path_hits;
 };
 
@@ -103,8 +104,11 @@ void run_benchmark(size_t dataSize) {
                 }
                 t1 = std::chrono::high_resolution_clock::now();
                 auto search_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                auto *tree_ptr = dynamic_cast<SimpleBPlusTree<key_type, 2> *>(&tree);
+                if (!tree_ptr) throw std::runtime_error("Failed to cast BaseFile to OptimizedBTree");
+                auto [leaf_count, utilization] = tree_ptr->get_leaf_stats();
 
-                results.push_back({"SimpleBPlusTree", sortedness, read_ratio, insert_time, search_time, 0, 0});
+                results.push_back({"SimpleBPlusTree", sortedness, read_ratio, insert_time, search_time, leaf_count, utilization, 0});
             }
 
             // === Benchmark 2: OptimizedBTree with LeafNode ===
@@ -136,8 +140,9 @@ void run_benchmark(size_t dataSize) {
 
                 auto *tree_ptr = dynamic_cast<OptimizedBTree<key_type, LeafNode, 4> *>(&tree);
                 if (!tree_ptr) throw std::runtime_error("Failed to cast BaseFile to OptimizedBTree");
+                auto [leaf_count, utilization] = tree_ptr->get_leaf_stats();
                 results.push_back({
-                    "OptimizedBTree", sortedness, read_ratio, insert_time, search_time, 0,
+                    "OptimizedBTree", sortedness, read_ratio, insert_time, search_time, leaf_count, utilization,
                     tree_ptr->get_fast_path_hits()
                 });
             }
@@ -147,7 +152,7 @@ void run_benchmark(size_t dataSize) {
                 const char *name = "lsm.db";
                 std::remove(name);
                 db::getDatabase().add(
-                    std::make_unique<OptimizedBTree<key_type, LeafNodeLSM, 4> >(
+                    std::make_unique<OptimizedBTree<key_type, AppendOnlyLeafNode, 4> >(
                         SplitPolicy::SORT, 0, name, td));
                 auto &tree = db::getDatabase().get(name);
                 tree.init();
@@ -167,10 +172,11 @@ void run_benchmark(size_t dataSize) {
                 t1 = std::chrono::high_resolution_clock::now();
                 auto search_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-                auto *tree_ptr = dynamic_cast<OptimizedBTree<key_type, LeafNodeLSM, 4> *>(&tree);
+                auto *tree_ptr = dynamic_cast<OptimizedBTree<key_type, AppendOnlyLeafNode, 4> *>(&tree);
                 if (!tree_ptr) throw std::runtime_error("Failed to cast BaseFile to OptimizedBTree");
+                auto [leaf_count, utilization] = tree_ptr->get_leaf_stats();
                 results.push_back({
-                    "LSMSORTTree", sortedness, read_ratio, insert_time, search_time, 0, tree_ptr->get_fast_path_hits()
+                    "AppendTreeSorted", sortedness, read_ratio, insert_time, search_time,leaf_count, utilization, tree_ptr->get_fast_path_hits()
                 });
             }
 
@@ -179,7 +185,7 @@ void run_benchmark(size_t dataSize) {
                 const char *name = "lsm_qp.db";
                 std::remove(name);
                 db::getDatabase().add(
-                    std::make_unique<OptimizedBTree<key_type, LeafNodeLSM, 4> >(
+                    std::make_unique<OptimizedBTree<key_type, AppendOnlyLeafNode, 4> >(
                         SplitPolicy::QUICK_PARTITION, 0, name, td));
                 auto &tree = db::getDatabase().get(name);
                 tree.init();
@@ -199,10 +205,11 @@ void run_benchmark(size_t dataSize) {
                 t1 = std::chrono::high_resolution_clock::now();
                 auto search_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-                auto *tree_ptr = dynamic_cast<OptimizedBTree<key_type, LeafNodeLSM, 4> *>(&tree);
+                auto *tree_ptr = dynamic_cast<OptimizedBTree<key_type, AppendOnlyLeafNode, 4> *>(&tree);
                 if (!tree_ptr) throw std::runtime_error("Failed to cast BaseFile to OptimizedBTree");
+                auto [leaf_count, utilization] = tree_ptr->get_leaf_stats();
                 results.push_back({
-                    "LSMQPTree", sortedness, read_ratio, insert_time, search_time, 0, tree_ptr->get_fast_path_hits()
+                    "AppendTreeQuick", sortedness, read_ratio, insert_time, search_time, leaf_count, utilization, tree_ptr->get_fast_path_hits()
                 });
             }
         }
@@ -210,11 +217,11 @@ void run_benchmark(size_t dataSize) {
 
     // Export to CSV
     std::ofstream out("btree_benchmark.csv");
-    out << "TreeType,Sortedness,ReadRatio,InsertTime,SearchTime,NodeCount,FastPathHits\n";
+    out << "TreeType,Sortedness,ReadRatio,InsertTime,SearchTime,LeafCount,LeafUtilization,FastPathHits\n";
     for (const auto &r: results) {
         out << r.tree_name << "," << r.sortedness << "," << r.read_ratio << ","
                 << r.insert_time_ms << "," << r.search_time_ms << ","
-                << r.node_count << "," << r.fast_path_hits << "\n";
+                << r.leaf_count << "," << r.leaf_utilization << "," << r.fast_path_hits << "\n";
     }
     out.close();
     std::cout << "CSV written to btree_benchmark.csv\n";
@@ -222,7 +229,7 @@ void run_benchmark(size_t dataSize) {
 
 
 int main(int argc, char *argv[]) {
-    size_t dataSize = 1000;
+    size_t dataSize = 100000;
     if (argc > 1) dataSize = std::stoi(argv[1]);
 
     run_benchmark(dataSize);

@@ -94,7 +94,6 @@ public:
     // Insert a tuple into the tree
     void insert(const Tuple &tuple) override {
         BufferPool &buffer_pool = getDatabase().getBufferPool();
-
         // std::unique_lock<std::timed_mutex> lock(tree_mutex);
         key_type key = std::get<key_type>(tuple.get_field(key_index));
 
@@ -270,6 +269,29 @@ public:
     // Get the fast path hit count (for performance analysis)
     size_t get_fast_path_hits() const {
         return fast_path_hits;
+    }
+
+    std::pair<size_t, double> get_leaf_stats() const {
+        size_t leaf_count = 0;
+        size_t total_used = 0;
+        size_t total_available = 0;
+
+        node_id_t curr = head_id;
+        auto &buffer_pool = getDatabase().getBufferPool();
+
+        while (curr != INVALID_NODE_ID) {
+            Page &page = buffer_pool.get_mut_page({filename, curr});
+            leaf_t leaf(page, td, key_index);
+
+            ++leaf_count;
+            total_used += leaf.used_space();
+            total_available += leaf_t::available_space;
+
+            curr = leaf.page_header->meta.next_id;
+        }
+
+        double utilization = (total_available > 0) ? (double)total_used / total_available : 0.0;
+        return {leaf_count, utilization};
     }
 
 private:

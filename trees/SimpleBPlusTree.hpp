@@ -118,6 +118,29 @@ public:
         return height;
     }
 
+    std::pair<size_t, double> get_leaf_stats() const {
+        size_t leaf_count = 0;
+        size_t total_used = 0;
+        size_t total_available = 0;
+
+        node_id_t curr = head_id;
+        auto &buffer_pool = getDatabase().getBufferPool();
+
+        while (curr != INVALID_NODE_ID) {
+            Page &page = buffer_pool.get_mut_page({filename, curr});
+            leaf_t leaf(page, td, key_index);
+
+            ++leaf_count;
+            total_used += leaf.used_space();
+            total_available += leaf_t::available_space;
+
+            curr = leaf.page_header->meta.next_id;
+        }
+
+        double utilization = (total_available > 0) ? (double)total_used / total_available : 0.0;
+        return {leaf_count, utilization};
+    }
+
 private:
     // buffer_pool_t &buffer_pool;
     const TupleDesc &td;

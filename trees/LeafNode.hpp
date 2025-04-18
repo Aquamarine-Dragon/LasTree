@@ -37,6 +37,8 @@ public:
         size_t heap_end;
     };
 
+    static constexpr uint16_t available_space = block_size - (sizeof(BaseHeader) + sizeof(PageHeader));
+
     uint8_t *buffer; // address of the page that stores this page
     const TupleDesc &td; // tuple schema of this page
     size_t key_index{}; // index of key in each tuple
@@ -93,6 +95,7 @@ public:
         return std::get<key_type>(t.get_field(key_index));
     }
 
+
     // Binary search based on keys in slots
     uint16_t value_slot(const key_type &key) const {
         // Binary search if sorted
@@ -129,6 +132,10 @@ public:
     Tuple get_tuple(size_t i) const {
         const Slot &slot = slots[i];
         return td.deserialize(buffer + slot.offset);
+    }
+
+    size_t used_space() const {
+        return block_size - page_header->heap_end + sizeof(Slot) * (page_header->slot_count);
     }
 
     size_t free_space() const {
@@ -279,9 +286,6 @@ public:
         return new_leaf.min_key();
     }
 
-    // bool is_nearly_full() const {
-    //     return free_space() < 0.1 * block_size;
-    // }
 
     bool is_full(const Tuple &t) const {
         return free_space() < td.length(t) + sizeof(Slot);

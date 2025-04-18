@@ -19,7 +19,7 @@ add_executable(BPlusTreeOpti
         trees/Types.hpp
         trees/LeafNode.hpp
         trees/InternalNode.hpp
-        trees/LeafNodeLSM.hpp
+        trees/AppendOnlyLeafNode.hpp
         trees/BufferPool.hpp
         trees/Database.hpp
         trees/BaseFile.hpp
