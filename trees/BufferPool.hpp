@@ -16,9 +16,12 @@ namespace db {
         std::unordered_map<PageId, size_t> pid_to_slot;
         std::unordered_map<size_t, PageId> slot_to_id;
         std::unordered_set<size_t> dirty_slots;
+        std::unordered_map<size_t, int> pin_count;
 
         std::list<size_t> lru;
         std::unordered_map<size_t, std::list<size_t>::iterator> slot_lru_map;
+
+        mutable std::mutex pool_mutex;
 
         size_t fetch_slot();
         void touch(size_t slot);
@@ -35,6 +38,8 @@ namespace db {
         void flush_all();
         void flushFile(const std::string &file);
         void evict(const PageId& id);
+        void pin_page(const PageId& id);
+        void unpin_page(const PageId& id);
         bool contains(const PageId& id) const;
     };
 

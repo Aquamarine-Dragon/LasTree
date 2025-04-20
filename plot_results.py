@@ -15,6 +15,7 @@ patterns = {
     "AppendTreeSorted": 'xxx',         # cross hatch
     "OptimizedBTree": '...',      # dotted
     "SimpleBPlusTree": '///',     # slanted
+    "LasTree": '++',
 }
 
 colors = {
@@ -22,6 +23,7 @@ colors = {
     "AppendTreeSorted": '#B4AEB2',
     "OptimizedBTree": '#74B488',
     "SimpleBPlusTree": '#6AA4B4',
+    "LasTree": '#FFCC66',
 }
 
 

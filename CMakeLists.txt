@@ -25,6 +25,7 @@ add_executable(BPlusTreeOpti
         trees/BaseFile.hpp
         trees/Database.cpp
         trees/BufferPool.cpp
+        trees/LasTree.hpp
 )
 
 # Add optional secondary index test program if desired

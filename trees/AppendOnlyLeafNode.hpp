@@ -285,6 +285,24 @@ public:
         return compacted;
     }
 
+    void sort() {
+        // compact
+        std::vector<Tuple> compacted = compact();
+
+        // Before re-inserting into old page, clear all records
+        page_header->slot_count = 0;
+        page_header->heap_end = block_size;
+        page_header->size = 0;
+        page_header->min_key = std::numeric_limits<key_type>::max();
+        page_header->max_key = std::numeric_limits<key_type>::min();
+
+        std::sort(compacted.begin(), compacted.end(), [&](const Tuple& a, const Tuple& b) {
+                return extract_key(a) < extract_key(b);
+            });
+        for (size_t i = 0; i < compacted.size(); ++i) insert(compacted[i]);
+        page_header->meta.isSorted = true;
+    }
+
     key_type split_into(AppendOnlyLeafNode& new_leaf) {
         // compact
         std::vector<Tuple> compacted = compact();
