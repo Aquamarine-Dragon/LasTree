@@ -5,7 +5,7 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
-#include <queue>
+#include <shared_mutex>
 #include <iostream>
 #include <unistd.h>
 #include <limits>
@@ -47,10 +47,8 @@ public:
           height(1),
           size(0),
             split_policy(policy),// split policy for LeafNodeLSM
-          stop_background_thread(true),
           root_id(INVALID_NODE_ID),
           head_id(INVALID_NODE_ID) {
-        // todo : test on background (false)
     }
 
     void init() override {
@@ -61,6 +59,7 @@ public:
         PageId leaf_pid{filename, head_id};
         leaf_t leaf(buffer_pool.get_mut_page(leaf_pid), td, key_index, head_id, INVALID_NODE_ID, split_policy, false);
         buffer_pool.mark_dirty(leaf_pid);
+        buffer_pool.unpin_page(leaf_pid);
 
         // Initialize root node (internal node pointing to the leaf)
         root_id = numPages.fetch_add(1);
@@ -69,26 +68,18 @@ public:
         buffer_pool.mark_dirty(root_pid);
         root.header->size = 0;
         root.children[0] = head_id;
+        buffer_pool.unpin_page(root_pid);
 
         // initialize fast path tracking
         fast_path_min_key = std::numeric_limits<key_type>::min();
         fast_path_max_key = std::numeric_limits<key_type>::max();
         fast_path_leaf_id = head_id;
-
-        // todo: Start background thread for sorting cold nodes
-        // background_sort_thread = std::thread(&OptimizedBTree::background_sort_worker, this);
     }
 
     // Destructor ensures background thread is properly terminated
     ~OptimizedBTree() override { {
-            std::unique_lock<std::timed_mutex> lock(tree_mutex);
-            stop_background_thread = true;
         }
         close(fd);
-        cold_nodes_cv.notify_one();
-        if (background_sort_thread.joinable()) {
-            background_sort_thread.join();
-        }
     }
 
     // Insert a tuple into the tree
@@ -109,14 +100,15 @@ public:
         path_t path;
         key_type next_leaf_min_key;
         node_id_t leaf_id = find_path_to_node(path, key, next_leaf_min_key);
-
         PageId leaf_pid{filename, leaf_id};
+        std::unique_lock<std::shared_mutex> lock(get_leaf_rwlock(leaf_id));
         Page &page = buffer_pool.get_mut_page(leaf_pid);
         leaf_t leaf(page, td, key_index);
 
         if (leaf.insert(tuple)) {
             buffer_pool.mark_dirty(leaf_pid);
             size++;
+            buffer_pool.unpin_page(leaf_pid);
 
             // if inserted into right of fast path, soft update path to next id
             if (key == fast_path_max_key + 1) {
@@ -146,6 +138,8 @@ public:
             return;
         }
 
+        buffer_pool.unpin_page(leaf_pid);
+
         insert_into_leaf(leaf_pid, tuple, path, next_leaf_min_key);
         size++;
     }
@@ -159,10 +153,16 @@ public:
         node_id_t leaf_id = find_leaf(_, actual_key);
 
         PageId pid{filename, leaf_id};
+        std::shared_lock<std::shared_mutex> lock(get_leaf_rwlock(leaf_id));
         Page &page = buffer_pool.get_mut_page(pid);
         leaf_t leaf(page, td, key_index);
 
-        return leaf.get(actual_key);
+        if (leaf.is_sorted()) {
+            ++sorted_leaf_search;
+        }
+        std::optional<Tuple> opt_tuple = leaf.get(actual_key);
+        buffer_pool.unpin_page(pid);
+        return opt_tuple;
     }
 
 
@@ -188,8 +188,34 @@ public:
             updated.set_field(idx, val);
         }
 
-        // todo test
-        return leaf.update(updated);
+        bool result = leaf.update(updated);
+        buffer_pool.unpin_page(leaf_pid);
+        return result;
+    }
+
+    std::vector<Tuple> range(const field_t &min_key, const field_t &max_key) override {
+        BufferPool &buffer_pool = getDatabase().getBufferPool();
+        path_t path;
+        std::vector<Tuple> result;
+
+        key_type actual_min_key = std::get<key_type>(min_key);
+        key_type actual_max_key = std::get<key_type>(max_key);
+        node_id_t leaf_id = find_leaf(path, actual_min_key);
+        while (leaf_id != INVALID_NODE_ID) {
+            PageId page_id{filename, leaf_id};
+            Page &page = buffer_pool.get_mut_page(page_id);
+            leaf_t leaf(page, td, key_index);
+            std::vector<Tuple> rangeTuples = leaf.get_range(actual_min_key, actual_max_key);
+            if (rangeTuples.empty()) {
+                buffer_pool.unpin_page(page_id);
+                return result;
+            }
+            result.insert(result.end(), rangeTuples.begin(), rangeTuples.end());
+
+            buffer_pool.unpin_page(page_id);
+            leaf_id = leaf.page_header->meta.next_id;
+        }
+        return result;
     }
 
 
@@ -204,7 +230,6 @@ public:
 
     // Print the tree structure (for debugging)
     void print(bool show_all_leaf, bool show_all_values = false) const {
-        // todo lock not working?
         // std::unique_lock<std::mutex> lock(tree_mutex);
         auto &buffer_pool = getDatabase().getBufferPool();
 
@@ -280,7 +305,8 @@ public:
         auto &buffer_pool = getDatabase().getBufferPool();
 
         while (curr != INVALID_NODE_ID) {
-            Page &page = buffer_pool.get_mut_page({filename, curr});
+            PageId pid = {filename, curr};
+            Page &page = buffer_pool.get_mut_page(pid);
             leaf_t leaf(page, td, key_index);
 
             ++leaf_count;
@@ -288,10 +314,15 @@ public:
             total_available += leaf_t::available_space;
 
             curr = leaf.page_header->meta.next_id;
+            buffer_pool.unpin_page(pid);
         }
 
         double utilization = (total_available > 0) ? (double)total_used / total_available : 0.0;
         return {leaf_count, utilization};
+    }
+
+    size_t get_sorted_leaf_search() const {
+        return sorted_leaf_search;
     }
 
 private:
@@ -318,13 +349,16 @@ private:
     uint8_t height;
     size_t size;
     size_t fast_path_hits = 0;
+    size_t sorted_leaf_search = 0;
 
-    // Thread for background sorting of cold nodes
-    std::thread background_sort_thread;
-    mutable std::timed_mutex tree_mutex;
-    std::condition_variable cold_nodes_cv;
-    std::queue<node_id_t> cold_nodes_queue;
-    bool stop_background_thread;
+    mutable std::unordered_map<node_id_t, std::shared_mutex> leaf_rwlocks;
+    mutable std::mutex leaf_lock_map_mutex;
+
+    std::shared_mutex& get_leaf_rwlock(node_id_t id) const {
+        std::lock_guard<std::mutex> guard(leaf_lock_map_mutex);
+        auto [it, inserted] = leaf_rwlocks.try_emplace(id);
+        return it->second;
+    }
 
     // Check if a key can use the fast path for insertion
     bool can_use_fast_path(const key_type &key) const {
@@ -335,20 +369,20 @@ private:
     void insert_fast_path(const Tuple &t, key_type key) {
         BufferPool &buffer_pool = getDatabase().getBufferPool();
         PageId fast_pid{filename, fast_path_leaf_id};
+        std::unique_lock<std::shared_mutex> lock(get_leaf_rwlock(fast_path_leaf_id));
         Page &leaf_page = buffer_pool.get_mut_page(fast_pid);
         leaf_t leaf(leaf_page, td, key_index);
 
         if (leaf.insert(t)) {
             // different insert impl based on leaf type
             buffer_pool.mark_dirty(fast_pid);
+            buffer_pool.unpin_page(fast_pid);
             fast_path_hits++;
             size++;
             return;
         }
+        buffer_pool.unpin_page(fast_pid);
 
-        // If we couldn't insert, we need to split the leaf
-        // std::cout << "Before fast path leaf split: " << std::endl;
-        // print(true);
         path_t path;
         key_type next_leaf_min_key;
         find_path_to_node(path, key, next_leaf_min_key);
@@ -368,6 +402,7 @@ private:
         // split
         node_id_t new_leaf_id = numPages.fetch_add(1);
         PageId new_leaf_pid{filename, new_leaf_id};
+        std::unique_lock<std::shared_mutex> lock2(get_leaf_rwlock(new_leaf_id));
         Page &new_leaf_page = buffer_pool.get_mut_page(new_leaf_pid);
         leaf_t new_leaf(new_leaf_page, td, key_index, new_leaf_id, INVALID_NODE_ID, split_policy, false);
 
@@ -393,6 +428,8 @@ private:
                 fast_path_max_key = next_leaf_min_key - 1;
             }
         }
+        buffer_pool.unpin_page(pid);
+        buffer_pool.unpin_page(new_leaf_pid);
 
         internal_insert(path, split_key, new_leaf_id);
     }
@@ -410,13 +447,17 @@ private:
 
             auto *base = reinterpret_cast<BaseHeader *>(page.data());
 
-            if (base->type == bp_node_type::LEAF) break;
+            if (base->type == bp_node_type::LEAF) {
+                buffer_pool.unpin_page(pid);
+                break;
+            }
 
             internal_t node(page);
             path.push_back(node_id);
 
             uint16_t slot = node.child_slot(key);
             node_id = node.children[slot];
+            buffer_pool.unpin_page(pid);
         }
 
         return node_id;
@@ -437,7 +478,10 @@ private:
 
             auto *base = reinterpret_cast<BaseHeader *>(page.data());
 
-            if (base->type == bp_node_type::LEAF) break;
+            if (base->type == bp_node_type::LEAF) {
+                buffer_pool.unpin_page(pid);
+                break;
+            }
 
             internal_t node(page);
             path.push_back(node_id);
@@ -448,6 +492,7 @@ private:
             if (slot < node.header->size) {
                 leaf_max = node.keys[slot];
             }
+            buffer_pool.unpin_page(pid);
         }
         return node_id;
     }
@@ -478,6 +523,8 @@ private:
                 node.keys[index] = key;
                 node.children[index + 1] = child_id;
                 ++node.header->size;
+
+                buffer_pool.unpin_page(page_id);
                 return;
             }
 
@@ -569,6 +616,8 @@ private:
             }
             // Continue upward with new key and right node
             child_id = new_node_id;
+            buffer_pool.unpin_page(page_id);
+            buffer_pool.unpin_page(new_page_id);
         }
         // If we've processed the entire path and still have a key to insert,
         // we need to create a new root
@@ -611,45 +660,8 @@ private:
 
         // Increase tree height
         height++;
-    }
-
-    // Worker method for background thread that sorts cold nodes
-    void background_sort_worker() {
-        while (true) {
-            node_id_t node_id_to_sort;
-            bool has_work = false; {
-                std::unique_lock<std::timed_mutex> lock(tree_mutex, std::chrono::milliseconds(100));
-                if (!lock.owns_lock()) {
-                    std::cout << "background_sort_worker: failed to acquire lock" << std::endl;
-                    continue;
-                }
-
-                if (stop_background_thread) {
-                    break;
-                }
-
-                if (!cold_nodes_queue.empty()) {
-                    node_id_to_sort = cold_nodes_queue.front();
-                    cold_nodes_queue.pop();
-                    has_work = true;
-                }
-            }
-
-            // Sort the cold node in the background
-            if (has_work) {
-                // try {
-                //     node_t node(block_manager.open_block(node_id_to_sort));
-                //     if (!node.info->isSorted) {
-                //         block_manager.mark_dirty(node_id_to_sort);
-                //         node.sort();
-                //     }
-                // } catch (const std::exception &e) {
-                //     std::cerr << "Error in background sort: " << e.what() << std::endl;
-                // }
-            } else {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-        }
+        buffer_pool.unpin_page(root_pid);
+        buffer_pool.unpin_page(left_pid);
     }
 
     // Print a node and its children recursively (for debugging)

@@ -95,6 +95,26 @@ public:
         return std::get<key_type>(t.get_field(key_index));
     }
 
+    key_type min_key() const {
+        for (size_t i = 0; i < page_header->slot_count; ++i) {
+            if (slots[i].valid) {
+                Tuple t = td.deserialize(buffer + slots[i].offset);
+                return extract_key(t);
+            }
+        }
+        throw std::runtime_error("Empty node");
+    }
+
+    key_type max_key() const {
+        for (int i = page_header->slot_count - 1; i >= 0; --i) {
+            if (slots[i].valid) {
+                Tuple t = td.deserialize(buffer + slots[i].offset);
+                return extract_key(t);
+            }
+        }
+        throw std::runtime_error("Empty node");
+    }
+
 
     // Binary search based on keys in slots
     uint16_t value_slot(const key_type &key) const {
@@ -127,6 +147,41 @@ public:
             }
         }
         return std::nullopt;
+    }
+
+    std::vector<Tuple> get_range(const key_type &minkey, const key_type &maxkey) const {
+        std::vector<Tuple> result;
+        if (this->min_key() > maxkey) // stop if no result
+            return result;
+        if (page_header->meta.isSorted) {
+            for (uint16_t i = 0; i < page_header->slot_count; ++i) {
+                const Slot &slot = slots[i];
+                if (!slot.valid) {
+                    continue;
+                }
+                Tuple t = td.deserialize(buffer + slot.offset);
+                // sorted data allows early cut
+                if (extract_key(t) < minkey) {
+                    continue;
+                }
+                if (extract_key(t) > maxkey) {
+                    return result;
+                }
+                result.push_back(t);
+            }
+        }else { // scan
+            for (uint16_t i = 0; i < page_header->slot_count; ++i) {
+                const Slot &slot = slots[i];
+                if (!slot.valid) continue;
+
+                Tuple t = td.deserialize(buffer + slot.offset);
+                key_type k = extract_key(t);
+                if (k < minkey) continue;
+                if (k > maxkey) continue;
+                result.push_back(t);
+            }
+        }
+        return result;
     }
 
     Tuple get_tuple(size_t i) const {
@@ -169,6 +224,7 @@ public:
             }
         }
     }
+
 
 
     bool insert(const Tuple &t) {
@@ -291,23 +347,5 @@ public:
         return free_space() < td.length(t) + sizeof(Slot);
     }
 
-    key_type min_key() const {
-        for (size_t i = 0; i < page_header->slot_count; ++i) {
-            if (slots[i].valid) {
-                Tuple t = td.deserialize(buffer + slots[i].offset);
-                return extract_key(t);
-            }
-        }
-        throw std::runtime_error("Empty node");
-    }
 
-    key_type max_key() const {
-        for (int i = page_header->slot_count - 1; i >= 0; --i) {
-            if (slots[i].valid) {
-                Tuple t = td.deserialize(buffer + slots[i].offset);
-                return extract_key(t);
-            }
-        }
-        throw std::runtime_error("Empty node");
-    }
 };

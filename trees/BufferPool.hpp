@@ -16,12 +16,12 @@ namespace db {
         std::unordered_map<PageId, size_t> pid_to_slot;
         std::unordered_map<size_t, PageId> slot_to_id;
         std::unordered_set<size_t> dirty_slots;
-        std::unordered_map<size_t, int> pin_count;
 
         std::list<size_t> lru;
         std::unordered_map<size_t, std::list<size_t>::iterator> slot_lru_map;
 
         mutable std::mutex pool_mutex;
+        std::unordered_map<size_t, std::atomic<int>> pin_count;
 
         size_t fetch_slot();
         void touch(size_t slot);

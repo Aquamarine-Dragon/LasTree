@@ -18,7 +18,9 @@ namespace db {
      * Any tree (e.g., BPlusTree, OptimizedBTree) should inherit from this.
      */
     class BaseFile {
+
     protected:
+        // using key_type = field_t;
         int fd;  // file descriptor
         std::string filename;
     public:
@@ -44,6 +46,8 @@ namespace db {
         virtual void insert(const Tuple &t) = 0;
 
         virtual std::optional<db::Tuple> get(const field_t& key) = 0;
+
+        virtual std::vector<Tuple> range(const field_t &min_key, const field_t &max_key) = 0;
 
         virtual void readPage(Page& page, size_t id) const {
             std::fill(page.begin(), page.end(), 0);

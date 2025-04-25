@@ -10,13 +10,13 @@ data = pd.read_csv(csv_file)
 data['Sortedness_Percent'] = data['Sortedness'] * 100
 
 # Set hatch patterns for different tree types
-patterns = {
-    "AppendTreeQuick": '',              # solid
-    "AppendTreeSorted": 'xxx',         # cross hatch
-    "OptimizedBTree": '...',      # dotted
-    "SimpleBPlusTree": '///',     # slanted
-    "LasTree": '++',
-}
+# patterns = {
+#     "AppendTreeQuick": '',              # solid
+#     "AppendTreeSorted": 'xxx',         # cross hatch
+#     "OptimizedBTree": '...',      # dotted
+#     "SimpleBPlusTree": '///',     # slanted
+#     "LasTree": '++',
+# }
 
 colors = {
     "AppendTreeQuick": '#B494AB',
@@ -48,7 +48,6 @@ def plot_metric_by_read_ratio(data, metric, ylabel, title, filename, bar_unit_sc
                 bar_vals,
                 width,
                 label=tree,
-                hatch=patterns.get(tree, ''),
                 edgecolor='black',
                 color=colors.get(tree, 'gray')
             )
@@ -71,8 +70,11 @@ data['FastPathHits'] = data['FastPathHits'] / 1000.0
 
 # Plot
 plot_metric_by_read_ratio(data, 'InsertTime', 'Insert Time (ms)', 'Insert Performance', 'insert_performance.png')
-plot_metric_by_read_ratio(data, 'SearchTime', 'Search Time (ms)', 'Search Performance', 'search_performance.png')
+plot_metric_by_read_ratio(data, 'PointLookupTime', 'Search Time (ms)', 'Point Query Performance', 'point_performance.png')
+plot_metric_by_read_ratio(data, 'RangeQueryTime', 'Search Time (ms)', 'Range Query Performance', 'range_performance.png')
 plot_metric_by_read_ratio(data, 'FastPathHits', 'Fast Path Hit (%)', 'Fast Path Usage', 'fast_path_hits.png', bar_unit_scale=1.0)
+plot_metric_by_read_ratio(data, 'MixedWorkloadTime', 'Mixed Workload Time (ms)', 'Mixed Workload Performance', 'mixed_workload.png')
+plot_metric_by_read_ratio(data, 'SortedLeafSearch', 'count', 'Search Count on Sorted Leaf', 'sorted_leaf_search_count.png')
 
 # Plot Leaf Count
 plot_metric_by_read_ratio(

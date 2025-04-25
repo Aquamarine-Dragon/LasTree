@@ -58,6 +58,7 @@ public:
         Page &leaf_page = buffer_pool.get_mut_page(leaf_pid);
         leaf_t leaf(leaf_page, td, key_index, head_id, INVALID_NODE_ID, SplitPolicy::SORT, /*isCold=*/false);
         buffer_pool.mark_dirty(leaf_pid);
+        buffer_pool.unpin_page(leaf_pid);
 
         // Allocate root node
         root_id = num_pages.fetch_add(1);
@@ -67,6 +68,7 @@ public:
         buffer_pool.mark_dirty(root_pid);
         root.header->size = 0;
         root.children[0] = head_id;
+        buffer_pool.unpin_page(root_pid);
     }
 
     // Insert a key-value pair into the tree
@@ -87,9 +89,10 @@ public:
         if (leaf.insert(tuple)) {
             buffer_pool.mark_dirty(leaf_pid);
             size++;
+            buffer_pool.unpin_page(leaf_pid);
             return;
         }
-
+        buffer_pool.unpin_page(leaf_pid);
         insert_into_leaf(leaf_pid, tuple, path);
         size++;
     }
@@ -103,9 +106,39 @@ public:
         PageId page_id{filename, leaf_id};
         Page &page = buffer_pool.get_mut_page(page_id);
         leaf_t leaf(page, td, key_index);
-
-        return leaf.get(actual_key);
+        if (leaf.is_sorted()) {
+            ++sorted_leaf_search;
+        }
+        std::optional<Tuple> opt_tuple = leaf.get(actual_key);
+        buffer_pool.unpin_page(page_id);
+        return opt_tuple;
     }
+
+    std::vector<Tuple> range(const field_t &min_key, const field_t &max_key) override {
+        BufferPool &buffer_pool = getDatabase().getBufferPool();
+        path_t path;
+        std::vector<Tuple> result;
+
+        key_type actual_min_key = std::get<key_type>(min_key);
+        key_type actual_max_key = std::get<key_type>(max_key);
+        node_id_t leaf_id = find_leaf(path, actual_min_key);
+        while (leaf_id != INVALID_NODE_ID) {
+            PageId page_id{filename, leaf_id};
+            Page &page = buffer_pool.get_mut_page(page_id);
+            leaf_t leaf(page, td, key_index);
+            std::vector<Tuple> rangeTuples = leaf.get_range(actual_min_key, actual_max_key);
+            if (rangeTuples.empty()) {
+                buffer_pool.unpin_page(page_id);
+                return result;
+            }
+            result.insert(result.end(), rangeTuples.begin(), rangeTuples.end());
+
+            buffer_pool.unpin_page(page_id);
+            leaf_id = leaf.page_header->meta.next_id;
+        }
+        return result;
+    }
+
 
 
     // Get the number of elements in the tree
@@ -127,7 +160,8 @@ public:
         auto &buffer_pool = getDatabase().getBufferPool();
 
         while (curr != INVALID_NODE_ID) {
-            Page &page = buffer_pool.get_mut_page({filename, curr});
+            PageId pid{filename, curr};
+            Page &page = buffer_pool.get_mut_page(pid);
             leaf_t leaf(page, td, key_index);
 
             ++leaf_count;
@@ -135,10 +169,15 @@ public:
             total_available += leaf_t::available_space;
 
             curr = leaf.page_header->meta.next_id;
+            buffer_pool.unpin_page(pid);
         }
 
         double utilization = (total_available > 0) ? (double)total_used / total_available : 0.0;
         return {leaf_count, utilization};
+    }
+
+    size_t get_sorted_leaf_search() const {
+        return sorted_leaf_search;
     }
 
 private:
@@ -154,6 +193,7 @@ private:
     // Tree metrics
     uint8_t height = 1;
     size_t size = 0;
+    size_t sorted_leaf_search = 0;
 
     // Find the leaf and collect the path from root to leaf
     node_id_t find_leaf(path_t &path, const key_type &key) const {
@@ -168,13 +208,17 @@ private:
 
             auto *base = reinterpret_cast<BaseHeader *>(page.data());
 
-            if (base->type == bp_node_type::LEAF) break;
+            if (base->type == bp_node_type::LEAF) {
+                buffer_pool.unpin_page(pid);
+                break;
+            }
 
             internal_t node(page);
             path.push_back(node_id);
 
             uint16_t slot = node.child_slot(key);
             node_id = node.children[slot];
+            buffer_pool.unpin_page(pid);
         }
         return node_id;
     }
@@ -204,6 +248,8 @@ private:
         }else {
             new_leaf.insert(t);
         }
+        buffer_pool.unpin_page(pid);
+        buffer_pool.unpin_page(new_leaf_pid);
 
         internal_insert(path, split_key, new_leaf_id);
     }
@@ -234,6 +280,8 @@ private:
                 node.keys[index] = key;
                 node.children[index + 1] = child_id;
                 ++node.header->size;
+
+                buffer_pool.unpin_page(page_id);
                 return;
             }
             // Save original size
@@ -320,6 +368,8 @@ private:
 
             // Continue upward with new key and right node
             child_id = new_node_id;
+            buffer_pool.unpin_page(page_id);
+            buffer_pool.unpin_page(new_page_id);
         }
 
         // If we've processed the entire path and still have a key to insert,
@@ -360,6 +410,8 @@ private:
 
         // Increase tree height
         height++;
+        buffer_pool.unpin_page(root_pid);
+        buffer_pool.unpin_page(left_pid);
     }
 };
 

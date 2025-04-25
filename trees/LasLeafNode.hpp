@@ -11,11 +11,10 @@
 using namespace db;
 
 /**
- * A LeafNode implementation for an append-only, LSM-like B+Tree node.
- * Supports insert and delete by appending new tuples with OpType.
+ * Lazy Sorted LeafNode
  */
 template <typename node_id_type, typename key_type, size_t split_per, size_t block_size>
-class AppendOnlyLeafNode {
+class LasLeafNode {
 public:
     static constexpr size_t MAX_SLOTS = 256;
 
@@ -40,7 +39,7 @@ public:
         uint16_t size; // number of tuples
         leaf_info meta;
         size_t slot_count;
-        SplitPolicy split_strategy;
+        // SplitPolicy split_strategy;
         key_type min_key;
         key_type max_key;
         size_t heap_end;
@@ -56,10 +55,10 @@ public:
     PageHeader* page_header;
     Slot* slots;
 
-    AppendOnlyLeafNode() = default;
+    LasLeafNode() = default;
 
     // constructor that loads from an existing buffer
-    explicit AppendOnlyLeafNode(Page &page, const TupleDesc &td, size_t key_index)
+    explicit LasLeafNode(Page &page, const TupleDesc &td, size_t key_index)
     : buffer(page.data()),
         td(td),
           key_index(key_index) {
@@ -68,7 +67,7 @@ public:
         slots = reinterpret_cast<Slot*>(buffer + sizeof(BaseHeader) + sizeof(PageHeader));
     }
 
-    AppendOnlyLeafNode(Page &page, const TupleDesc& desc, size_t key, node_id_type id, node_id_type next_id,  SplitPolicy policy, bool isCold)
+    LasLeafNode(Page &page, const TupleDesc& desc, size_t key, node_id_type id, node_id_type next_id, bool isCold)
     : buffer(page.data()),
     td(desc),
     key_index(key)
@@ -84,7 +83,6 @@ public:
         page_header->meta.isCold = isCold;
         page_header->size = 0;
         page_header->slot_count = 0;
-        page_header->split_strategy = policy;
         page_header->min_key = std::numeric_limits<key_type>::max();
         page_header->max_key = std::numeric_limits<key_type>::min();
         page_header->heap_end = block_size;
@@ -102,16 +100,16 @@ public:
         return page_header->meta.isSorted;
     }
 
+    key_type extract_key(const Tuple& t) const {
+        return std::get<key_type>(t.get_field(key_index));
+    }
+
     key_type min_key() const {
         return page_header->min_key;
     }
 
     key_type max_key() const {
         return page_header->max_key;
-    }
-
-    key_type extract_key(const Tuple& t) const {
-        return std::get<key_type>(t.get_field(key_index));
     }
 
     OpType get_op_type(size_t i) const {
@@ -121,6 +119,12 @@ public:
     size_t used_space() const {
         return block_size - page_header->heap_end + sizeof(Slot) * (page_header->slot_count);
     }
+
+    bool almost_full() const {
+        // Return true if 80% of the available space is occupied
+        return used_space() >= (block_size * 0.8);
+    }
+
 
     bool can_insert(size_t tuple_len) const {
         size_t new_offset = page_header->heap_end - tuple_len;
@@ -195,45 +199,6 @@ public:
             return true;
         }
         return false;
-    }
-
-    std::vector<Tuple> get_range(const key_type &min_key, const key_type &max_key) const {
-        std::vector<Tuple> result;
-        if (this->min_key() > max_key) // stop if no result
-            return result;
-        if (page_header->meta.isSorted) {
-            for (uint16_t i = 0; i < page_header->slot_count; ++i) {
-                const Slot &slot = slots[i];
-                Tuple t = td.deserialize(buffer + slot.offset + sizeof(OpType));
-                // sorted data allows early cut
-                if (extract_key(t) < min_key) {
-                    continue;
-                }
-                if (extract_key(t) > max_key) {
-                    return result;
-                }
-                result.push_back(t);
-            }
-        }else { // scan
-            std::unordered_set<key_type> seen;
-            for (int i = page_header->slot_count - 1; i >= 0; --i) {
-                const Slot &slot = slots[i];
-
-                OpType op = static_cast<OpType>(buffer[slot.offset]);
-                Tuple t = td.deserialize(buffer + slot.offset + sizeof(OpType));
-                key_type k = extract_key(t);
-
-                if (k < min_key || k > max_key) continue;
-
-                if (seen.contains(k)) continue;
-                seen.insert(k);
-                if (op == OpType::Delete) continue;
-
-                result.push_back(t);
-            }
-            std::ranges::reverse(result); // maintain sorted order
-        }
-        return result;
     }
 
     // Append a delete marker
@@ -311,6 +276,45 @@ public:
         return td.deserialize(buffer + slot.offset + sizeof(OpType));
     }
 
+    std::vector<Tuple> get_range(const key_type &min_key, const key_type &max_key) const {
+        std::vector<Tuple> result;
+        if (this->min_key() > max_key) // stop if no result
+            return result;
+        if (page_header->meta.isSorted) {
+            for (uint16_t i = 0; i < page_header->slot_count; ++i) {
+                const Slot &slot = slots[i];
+                Tuple t = td.deserialize(buffer + slot.offset + sizeof(OpType));
+                // sorted data allows early cut
+                if (extract_key(t) < min_key) {
+                    continue;
+                }
+                if (extract_key(t) > max_key) {
+                    return result;
+                }
+                result.push_back(t);
+            }
+        }else { // scan
+            std::unordered_set<key_type> seen;
+            for (int i = page_header->slot_count - 1; i >= 0; --i) {
+                const Slot &slot = slots[i];
+
+                OpType op = static_cast<OpType>(buffer[slot.offset]);
+                Tuple t = td.deserialize(buffer + slot.offset + sizeof(OpType));
+                key_type k = extract_key(t);
+
+                if (k < min_key || k > max_key) continue;
+
+                if (seen.contains(k)) continue;
+                seen.insert(k);
+                if (op == OpType::Delete) continue;
+
+                result.push_back(t);
+            }
+            std::ranges::reverse(result); // maintain sorted order
+        }
+        return result;
+    }
+
     std::vector<Tuple> compact() {
         std::vector<Tuple> compacted;
         std::unordered_set<key_type> tombstones;
@@ -350,51 +354,82 @@ public:
         page_header->meta.isSorted = true;
     }
 
-    key_type split_into(AppendOnlyLeafNode& new_leaf) {
-        // compact
-        std::vector<Tuple> compacted = compact();
+    // key_type split_into(LasLeafNode& new_leaf) {
+    //     // compact
+    //     std::vector<Tuple> compacted = compact();
+    //
+    //     // Before re-inserting into old page, clear all records
+    //     page_header->slot_count = 0;
+    //     page_header->heap_end = block_size;
+    //     page_header->size = 0;
+    //     page_header->min_key = std::numeric_limits<key_type>::max();
+    //     page_header->max_key = std::numeric_limits<key_type>::min();
+    //
+    //     // policy 1: quick partition by split key
+    //     size_t idx = compacted.size() * 3 / 4;
+    //     key_type split_key = extract_key(compacted[idx]);
+    //     for (int i = 0; i < page_header->slot_count; ++i) {
+    //         const Slot& slot = slots[i];
+    //         OpType op = static_cast<OpType>(buffer[slot.offset]);
+    //         if (op == OpType::Delete) continue;
+    //
+    //         Tuple t = td.deserialize(buffer + slot.offset + sizeof(OpType));
+    //         key_type k = extract_key(t);
+    //
+    //         if (k < split_key) {
+    //             this->insert(t);
+    //         } else {
+    //             new_leaf.insert(t);
+    //         }
+    //     }
+    //     return split_key;
+    // }
 
-        // Before re-inserting into old page, clear all records
-        page_header->slot_count = 0;
-        page_header->heap_end = block_size;
-        page_header->size = 0;
-        page_header->min_key = std::numeric_limits<key_type>::max();
-        page_header->max_key = std::numeric_limits<key_type>::min();
+    key_type split_into(LasLeafNode& new_leaf) {
+        // get all deduped tuples
+        std::vector<std::pair<key_type, Tuple>> tuples;
+        std::unordered_set<key_type> seen;
 
-        // split
-        if (page_header->split_strategy == SplitPolicy::QUICK_PARTITION) {
-            // policy 1: quick partition by split key
-            size_t idx = compacted.size() * 3 / 4;
-            key_type split_key = extract_key(compacted[idx]);
-            for (const Tuple& t : compacted) {
-                if (extract_key(t) < split_key)
-                    this->insert(t); // back to old page
-                else
-                    new_leaf.insert(t); // to new page
+        for (int i = static_cast<int>(page_header->slot_count) - 1; i >= 0; --i) {
+            const Slot& slot = slots[i];
+            OpType op = static_cast<OpType>(buffer[slot.offset]);
+            if (op == OpType::Delete) {
+                seen.insert(extract_key(td.deserialize(buffer + slot.offset + sizeof(OpType))));
+                continue;
             }
-            // restore linked list
-            new_leaf.page_header->meta.next_id = page_header->meta.next_id;
-            page_header->meta.next_id = new_leaf.page_header->id;
-            return split_key;
-        }else {
-            // policy 2: sort on split
-            std::sort(compacted.begin(), compacted.end(), [&](const Tuple& a, const Tuple& b) {
-                return extract_key(a) < extract_key(b);
-            });
-            // todo modify percentage
-            size_t half = compacted.size() * 3 / 4;
-            for (size_t i = 0; i < half; ++i) insert(compacted[i]);
-            for (size_t i = half; i < compacted.size(); ++i) new_leaf.insert(compacted[i]);
-            page_header->meta.isSorted = true;
-            new_leaf.page_header->meta.isSorted = true;
 
-            // restore linked list
-            new_leaf.page_header->meta.next_id = page_header->meta.next_id;
-            page_header->meta.next_id = new_leaf.page_header->id;
+            Tuple t = td.deserialize(buffer + slot.offset + sizeof(OpType));
+            key_type k = extract_key(t);
 
-            return new_leaf.min_key();
+            if (!seen.contains(k)) {
+                seen.insert(k);
+                tuples.emplace_back(k, t);
+            }
         }
+
+        // find element at 5/6 pos
+        size_t pivot_pos = tuples.size() * 5 / 6;
+        if (pivot_pos < tuples.size()) {
+            std::nth_element(tuples.begin(), tuples.begin() + pivot_pos, tuples.end(),
+                [](const auto& a, const auto& b) { return a.first < b.first; });
+
+            key_type split_key = tuples[pivot_pos].first;
+
+            // insert key into new leaf and erase from old leaf
+            for (const auto& [k, t] : tuples) {
+                if (k >= split_key) {
+                    new_leaf.insert(t);
+                    this->erase(k);
+                }
+            }
+        }
+
+        new_leaf.page_header->meta.next_id = page_header->meta.next_id;
+        page_header->meta.next_id = new_leaf.page_header->id;
+
+        return new_leaf.min_key();
     }
+
 
     void compute_min_max() {
         key_type new_min = std::numeric_limits<key_type>::max();
