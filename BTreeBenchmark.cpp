@@ -52,7 +52,8 @@ std::vector<std::pair<key_type, value_type>> range_scan(Tree &tree, const key_ty
 void run_benchmark(size_t dataSize) {
 
     std::vector<double> sortedness_levels = {1.0, 0.95, 0.8, 0.5, 0.2, 0.0};
-    std::vector<double> read_ratios = {0.0, 0.5};
+    // std::vector<double> sortedness_levels = {0.8};
+    std::vector<double> read_ratios = {0.5};
 
     std::vector<ResultRow> results;
 
@@ -91,6 +92,8 @@ void run_benchmark(size_t dataSize) {
             range_queries.push_back({start, end});
         }
 
+
+
         // === Benchmark 1: SimpleBPlusTree ===
         {
             const char *name = "simple.db";
@@ -120,7 +123,8 @@ void run_benchmark(size_t dataSize) {
                     if (!val.has_value()) throw std::runtime_error("Missing key in simple tree");
                 }
                 t1 = std::chrono::high_resolution_clock::now();
-                search_times.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+                double avg_search_time_per_op = std::chrono::duration<double, std::milli>(t1 - t0).count() / read_keys.size();
+                search_times.push_back(avg_search_time_per_op);
             }
 
             // Measure range query time
@@ -131,6 +135,7 @@ void run_benchmark(size_t dataSize) {
             }
             t1 = std::chrono::high_resolution_clock::now();
             auto range_query_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            auto range_query_time_per_op = range_query_time / range_queries.size();
 
             // construct a new tree for mixed workload
             const char *mix_name = "simple_mix.db";
@@ -171,6 +176,7 @@ void run_benchmark(size_t dataSize) {
             }
             t1 = std::chrono::high_resolution_clock::now();
             auto mixed_workload_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            auto mixed_workload_time_per_op = mixed_workload_time / dataSize;
 
             auto *tree_ptr = dynamic_cast<SimpleBPlusTree<key_type, 2> *>(&tree);
             if (!tree_ptr) throw std::runtime_error("Failed to cast BaseFile to SimpleBPlusTree");
@@ -179,10 +185,11 @@ void run_benchmark(size_t dataSize) {
             auto *mix_tree_ptr = dynamic_cast<SimpleBPlusTree<key_type, 2> *>(&mix_tree);
             if (!mix_tree_ptr) throw std::runtime_error("Failed to cast BaseFile to SimpleBPlusTree");
             size_t sorted_leaf_search = mix_tree_ptr->get_sorted_leaf_search();
+            auto insert_time_per_op = insert_time / dataSize;
 
             for (size_t i = 0; i < read_ratios.size(); ++i) {
-                results.push_back({"SimpleBPlusTree", sortedness, read_ratios[i], insert_time,
-                                  search_times[i], range_query_time, mixed_workload_time,
+                results.push_back({"SimpleBTree", sortedness, read_ratios[i], insert_time_per_op,
+                                  search_times[i], range_query_time_per_op, mixed_workload_time_per_op,
                                   leaf_count, utilization, 0, sorted_leaf_search});
             }
         }
@@ -218,7 +225,9 @@ void run_benchmark(size_t dataSize) {
                     if (!val.has_value()) throw std::runtime_error("Missing key in optimized tree");
                 }
                 t1 = std::chrono::high_resolution_clock::now();
-                search_times.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+                double avg_search_time_per_op = std::chrono::duration<double, std::milli>(t1 - t0).count() / read_keys.size();
+                search_times.push_back(avg_search_time_per_op);
+                // search_times.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
             }
 
             // Measure range query time
@@ -229,6 +238,7 @@ void run_benchmark(size_t dataSize) {
             }
             t1 = std::chrono::high_resolution_clock::now();
             auto range_query_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            auto range_query_time_per_op = range_query_time / range_queries.size();
 
             // Mixed workload (70% insert, 30% lookup)
             std::vector<key_type> mixed_keys(dataSize);
@@ -269,6 +279,7 @@ void run_benchmark(size_t dataSize) {
             }
             t1 = std::chrono::high_resolution_clock::now();
             auto mixed_workload_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            auto mixed_workload_time_per_op = mixed_workload_time / dataSize;
 
             auto *tree_ptr = dynamic_cast<OptimizedBTree<key_type, LeafNode, 4> *>(&tree);
             if (!tree_ptr) throw std::runtime_error("Failed to cast BaseFile to OptimizedBTree");
@@ -277,10 +288,11 @@ void run_benchmark(size_t dataSize) {
             auto *mix_tree_ptr = dynamic_cast<OptimizedBTree<key_type, LeafNode, 4> *>(&mix_tree);
             if (!mix_tree_ptr) throw std::runtime_error("Failed to cast BaseFile to OptimizedBTree");
             size_t sorted_leaf_search = mix_tree_ptr->get_sorted_leaf_search();
+            auto insert_time_per_op = insert_time / dataSize;
 
             for (size_t i = 0; i < read_ratios.size(); ++i) {
-                results.push_back({"OptimizedBTree", sortedness, read_ratios[i], insert_time,
-                                  search_times[i], range_query_time, mixed_workload_time,
+                results.push_back({"OptimizedBTree", sortedness, read_ratios[i], insert_time_per_op,
+                                  search_times[i], range_query_time_per_op, mixed_workload_time_per_op,
                                   leaf_count, utilization, tree_ptr->get_fast_path_hits(), sorted_leaf_search});
             }
         }
@@ -316,7 +328,9 @@ void run_benchmark(size_t dataSize) {
                     if (!val.has_value()) throw std::runtime_error("Missing key in LSM tree");
                 }
                 t1 = std::chrono::high_resolution_clock::now();
-                search_times.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+                double avg_search_time_per_op = std::chrono::duration<double, std::milli>(t1 - t0).count() / read_keys.size();
+                search_times.push_back(avg_search_time_per_op);
+                // search_times.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
             }
 
             // Measure range query time
@@ -327,6 +341,7 @@ void run_benchmark(size_t dataSize) {
             }
             t1 = std::chrono::high_resolution_clock::now();
             auto range_query_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            auto range_query_time_per_op = range_query_time / range_queries.size();
 
             // Mixed workload (70% insert, 30% lookup)
             std::vector<key_type> mixed_keys(dataSize);
@@ -368,6 +383,7 @@ void run_benchmark(size_t dataSize) {
             }
             t1 = std::chrono::high_resolution_clock::now();
             auto mixed_workload_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            auto mixed_workload_time_per_op = mixed_workload_time / dataSize;
 
             auto *tree_ptr = dynamic_cast<OptimizedBTree<key_type, AppendOnlyLeafNode, 4> *>(&tree);
             if (!tree_ptr) throw std::runtime_error("Failed to cast BaseFile to OptimizedBTree");
@@ -376,10 +392,10 @@ void run_benchmark(size_t dataSize) {
             auto *mix_tree_ptr = dynamic_cast<OptimizedBTree<key_type, AppendOnlyLeafNode, 4> *>(&mix_tree);
             if (!mix_tree_ptr) throw std::runtime_error("Failed to cast BaseFile to OptimizedBTree");
             size_t sorted_leaf_search = mix_tree_ptr->get_sorted_leaf_search();
-
+            auto insert_time_per_op = insert_time / dataSize;
             for (size_t i = 0; i < read_ratios.size(); ++i) {
-                results.push_back({"AppendTreeSorted", sortedness, read_ratios[i], insert_time,
-                                  search_times[i], range_query_time, mixed_workload_time,
+                results.push_back({"LoggedBTree", sortedness, read_ratios[i], insert_time_per_op,
+                                  search_times[i], range_query_time_per_op, mixed_workload_time_per_op,
                                   leaf_count, utilization, tree_ptr->get_fast_path_hits(), sorted_leaf_search});
             }
         }
@@ -414,7 +430,9 @@ void run_benchmark(size_t dataSize) {
                     if (!val.has_value()) throw std::runtime_error("Missing key in LaS tree");
                 }
                 t1 = std::chrono::high_resolution_clock::now();
-                search_times.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+                double avg_search_time_per_op = std::chrono::duration<double, std::milli>(t1 - t0).count() / read_keys.size();
+                search_times.push_back(avg_search_time_per_op);
+                // search_times.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
             }
 
             // Measure range query time
@@ -425,6 +443,7 @@ void run_benchmark(size_t dataSize) {
             }
             t1 = std::chrono::high_resolution_clock::now();
             auto range_query_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            auto range_query_time_per_op = range_query_time / range_queries.size();
 
             // Mixed workload (70% insert, 30% lookup)
             std::vector<key_type> mixed_keys(dataSize);
@@ -466,6 +485,7 @@ void run_benchmark(size_t dataSize) {
             }
             t1 = std::chrono::high_resolution_clock::now();
             auto mixed_workload_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            auto mixed_workload_time_per_op = mixed_workload_time / dataSize;
 
             auto *tree_ptr = dynamic_cast<LasTree<key_type, 4> *>(&tree);
             if (!tree_ptr) throw std::runtime_error("Failed to cast BaseFile to LasTree");
@@ -474,10 +494,10 @@ void run_benchmark(size_t dataSize) {
             auto *mix_tree_ptr = dynamic_cast<LasTree<key_type, 4> *>(&mix_tree);
             if (!mix_tree_ptr) throw std::runtime_error("Failed to cast BaseFile to LasTree");
             size_t sorted_leaf_search = mix_tree_ptr->get_sorted_leaf_search();
-
+            auto insert_time_per_op = insert_time / dataSize;
             for (size_t i = 0; i < read_ratios.size(); ++i) {
-                results.push_back({"LasTree", sortedness, read_ratios[i], insert_time,
-                                  search_times[i], range_query_time, mixed_workload_time,
+                results.push_back({"LasTree", sortedness, read_ratios[i], insert_time_per_op,
+                                  search_times[i], range_query_time_per_op, mixed_workload_time_per_op,
                                   leaf_count, utilization, tree_ptr->get_fast_path_hits(), sorted_leaf_search});
             }
         }

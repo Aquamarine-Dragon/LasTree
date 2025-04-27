@@ -12,7 +12,6 @@
 #include <limits>
 #include <optional>
 
-#include "AppendOnlyLeafNode.hpp"
 #include "BaseFile.hpp"
 #include "NodeTypes.hpp"
 #include "Database.hpp"
@@ -277,10 +276,12 @@ public:
         node_id_t curr_id = head_id;
         while (curr_id != INVALID_NODE_ID) {
             // fetch from buffer pool and construct
-            Page &page = buffer_pool.get_mut_page({filename, curr_id});
+            PageId page_id{filename, curr_id};
+            Page &page = buffer_pool.get_mut_page(page_id);
             leaf_t node(page, td, key_index);
 
             if (!show_all_leaf && curr_id != head_id && node.page_header->meta.next_id != INVALID_NODE_ID) {
+                buffer_pool.unpin_page(page_id);
                 curr_id = node.page_header->meta.next_id;
                 continue;
             }
@@ -289,10 +290,12 @@ public:
 
             if (show_all_values) {
                 // display all values
-                for (uint16_t i = 0; i < node.get_size(); i++) {
-                    Tuple t = node.get_tuple(i);
-                    std::cout << td.to_string(t);
-                    if (i < node.get_size() - 1) std::cout << ", ";
+                for (uint16_t i = 0; i < node.get_slot_count(); i++) {
+                    std::optional<Tuple> t = node.get_tuple(i);
+                    if (t.has_value()) {
+                        std::cout << td.to_string(t.value());
+                    }
+                    if (i < node.get_slot_count() - 1) std::cout << ", ";
                 }
             } else {
                 if (node.get_size() > 0) {
@@ -313,7 +316,7 @@ public:
             std::cout << (node.is_sorted() ? "sorted" : "unsorted");
             if (curr_id == fast_path_leaf_id) std::cout << " (fast path)";
             std::cout << std::endl;
-
+            buffer_pool.unpin_page(page_id);
             curr_id = node.page_header->meta.next_id;
         }
     }
@@ -415,22 +418,19 @@ private:
     // Insert using the fast path (O(1) insertion for sequential data)
     void insert_fast_path(const Tuple &t, key_type key) {
         BufferPool &buffer_pool = getDatabase().getBufferPool();
-        PageId fast_pid{filename, fast_path_leaf_id};
+
         // std::cout << "insert_fast_path get_mut_page for "
         //           << " PageId= " << fast_path_leaf_id
         //           << std::endl;
         std::unique_lock<std::shared_mutex> lock(get_leaf_rwlock(fast_path_leaf_id));
+        PageId fast_pid{filename, fast_path_leaf_id};
         Page &leaf_page = buffer_pool.get_mut_page(fast_pid);
         leaf_t leaf(leaf_page, td, key_index);
 
         if (leaf.insert(t)) {
             // different insert impl based on leaf type
             buffer_pool.mark_dirty(fast_pid);
-            buffer_pool.unpin_page(fast_pid);  // unpin on successful insert
-            lock.unlock();
-
-
-
+            buffer_pool.unpin_page(fast_pid);
             fast_path_hits++;
             size++;
             return;
@@ -439,8 +439,6 @@ private:
         buffer_pool.unpin_page(fast_pid);
 
         // If we couldn't insert, we need to split the leaf
-        // std::cout << "Before fast path leaf split: " << std::endl;
-        // print(true);
         path_t path;
         key_type next_leaf_min_key;
         find_path_to_node(path, key, next_leaf_min_key);
@@ -507,7 +505,6 @@ private:
                     cold_nodes_cv.notify_one();
                 }
             }
-
         }
 
         internal_insert(path, split_key, new_leaf_id);
@@ -789,7 +786,7 @@ private:
             Page &page = buffer_pool.get_mut_page(pid);
             leaf_t leaf(page, td, key_index);
             if (!leaf.is_sorted()) {
-                // std::cout << "[BG_WORKER] Sorting leaf node ID: " << node_id_to_sort << std::endl;
+                // std::cout << "[BG_WORKER] Sorti ng leaf node ID: " << node_id_to_sort << std::endl;
                 buffer_pool.mark_dirty(pid);
                 leaf.sort();
                 {
@@ -798,10 +795,7 @@ private:
                 }
                 // std::cout << "[Thread " << std::this_thread::get_id() << "[BG_WORKER] Finished sorting node ID: " << node_id_to_sort << std::endl;
                 bg_sort_count.fetch_add(1);
-            }else {
-                // std::cout << "[BG_WORKER] Node ID " << node_id_to_sort << " already sorted. Skipped." << std::endl;
             }
-
             buffer_pool.unpin_page(pid);
         }
     }
@@ -825,8 +819,10 @@ private:
 
             if (show_all_values) {
                 for (uint16_t i = 0; i < node.get_size(); i++) {
-                    Tuple t = node.get_tuple(i);
-                    std::cout << td.to_string(t);
+                    std::optional<Tuple> t = node.get_tuple(i);
+                    if (t.has_value()) {
+                        std::cout << td.to_string(t.value());
+                    }
                     if (i < node.get_size() - 1) std::cout << ", ";
                 }
             } else {
@@ -872,15 +868,16 @@ private:
 
             std::cout << "]" << std::endl;
 
-            // for (uint16_t i = 0; i <= node.header->size; i++) {
-            //     print_node(node.children[i], level + 1, false);
-            // }
-            // print 1st and last child
-            print_node(node.children[0], level + 1, false);
-            if (node.header->size > 2) {
-                print_node(node.children[1], level + 1, true);
+            for (uint16_t i = 0; i <= node.header->size; i++) {
+                print_node(node.children[i], level + 1, false);
             }
-            print_node(node.children[node.header->size], level + 1, false);
+            // print 1st and last child
+            // print_node(node.children[0], level + 1, false);
+            // if (node.header->size > 2) {
+            //     print_node(node.children[1], level + 1, true);
+            // }
+            // print_node(node.children[node.header->size], level + 1, false);
         }
+        buffer_pool.unpin_page(pid);
     }
 };

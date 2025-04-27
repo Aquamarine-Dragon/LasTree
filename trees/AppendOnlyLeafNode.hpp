@@ -145,6 +145,14 @@ public:
         for (size_t i = 0; i < page_header->slot_count; ++i) {
             const auto& slot = slots[i];
             OpType op = static_cast<OpType>(buffer[slot.offset]);
+
+            if (op == OpType::Delete) {
+                key_type tombstone_key = *reinterpret_cast<const key_type*>(buffer + slot.offset + sizeof(OpType));
+                std::cout
+                      << "Tombstone: key= " << tombstone_key
+                      << std::endl;
+                continue;
+            }
             Tuple t = td.deserialize(buffer + slot.offset + sizeof(OpType));
             std::cout << "    [" << i << "] "
                       << "(" << (op == OpType::Insert ? "Insert" : "Delete") << ") "
@@ -152,7 +160,6 @@ public:
                       << std::endl;
         }
     }
-
 
     // Append an insert operation
     bool insert(const Tuple& t) {
@@ -215,20 +222,25 @@ public:
                 result.push_back(t);
             }
         }else { // scan
-            std::unordered_set<key_type> seen;
+            std::unordered_set<key_type> seen;          // To store keys we've already seen
+            std::unordered_set<key_type> tombstones;    // To store keys that have been deleted
+
             for (int i = page_header->slot_count - 1; i >= 0; --i) {
                 const Slot &slot = slots[i];
 
                 OpType op = static_cast<OpType>(buffer[slot.offset]);
+                if (op == OpType::Delete) {
+                    key_type tombstone_key = *reinterpret_cast<const key_type*>(buffer + slot.offset + sizeof(OpType));
+                    tombstones.insert(tombstone_key);
+                    continue;
+                }
                 Tuple t = td.deserialize(buffer + slot.offset + sizeof(OpType));
                 key_type k = extract_key(t);
 
                 if (k < min_key || k > max_key) continue;
 
-                if (seen.contains(k)) continue;
+                if (seen.contains(k) || tombstones.contains(k)) continue;
                 seen.insert(k);
-                if (op == OpType::Delete) continue;
-
                 result.push_back(t);
             }
             std::ranges::reverse(result); // maintain sorted order
@@ -238,21 +250,22 @@ public:
 
     // Append a delete marker
     bool erase(const key_type& key) {
-        Tuple tombstone(td.size());
-        // Fill only key field (others don't matter)
-        tombstone.set_field(key_index, key);
+        // Size calculation for tombstone: OpType + key only
+        const size_t tombstone_len = sizeof(OpType) + sizeof(key_type);
 
-        const size_t len = td.length(tombstone) + sizeof(OpType);
-        if (!can_insert(len)) return false;
+        if (!can_insert(tombstone_len)) return false;
 
-        page_header->heap_end -= len;
+        page_header->heap_end -= tombstone_len;
         buffer[page_header->heap_end] = static_cast<uint8_t>(OpType::Delete);
-        td.serialize(buffer + page_header->heap_end + sizeof(OpType), tombstone);
+
+        // Write only the key directly after the OpType
+        *reinterpret_cast<key_type*>(buffer + page_header->heap_end + sizeof(OpType)) = key;
 
         slots[page_header->slot_count] = {
             static_cast<uint16_t>(page_header->heap_end),
-            static_cast<uint16_t>(len)
+            static_cast<uint16_t>(tombstone_len)
         };
+
         --page_header->size;
         ++page_header->slot_count;
 
@@ -297,9 +310,16 @@ public:
         for (int i = static_cast<int>(page_header->slot_count) - 1; i >= 0; --i) {
             const Slot& slot = slots[i];
             OpType op = static_cast<OpType>(buffer[slot.offset]);
+            if (op == OpType::Delete) {
+                key_type tombstone_key = *reinterpret_cast<const key_type*>(buffer + slot.offset + sizeof(OpType));
+                if (tombstone_key == key) {
+                    // Tombstone with the same key found, return nullopt (key deleted)
+                    return std::nullopt;
+                }
+                continue;  // Skip tombstones
+            }
             Tuple t = td.deserialize(buffer + slot.offset + sizeof(OpType));
             if (extract_key(t) == key) {
-                if (op == OpType::Delete) return std::nullopt;
                 return t;
             }
         }
@@ -313,20 +333,25 @@ public:
 
     std::vector<Tuple> compact() {
         std::vector<Tuple> compacted;
+        std::unordered_set<key_type> seen;
         std::unordered_set<key_type> tombstones;
 
         for (int i = page_header->slot_count - 1; i >= 0; --i) {
             const Slot& slot = slots[i];
             OpType op = static_cast<OpType>(buffer[slot.offset]);
+            if (op == OpType::Delete) {
+                key_type tombstone_key = *reinterpret_cast<const key_type*>(buffer + slot.offset + sizeof(OpType));
+                tombstones.insert(tombstone_key);
+                continue;  // Skip tombstones
+            }
             Tuple t = td.deserialize(buffer + slot.offset + sizeof(OpType));
             key_type k = extract_key(t);
 
-            if (op == OpType::Delete) {
-                tombstones.insert(k);
-            } else if (!tombstones.contains(k)) {
+            if (!tombstones.contains(k) && !seen.contains(k)) {
                 tombstones.insert(k);
                 compacted.push_back(t);
             }
+            seen.insert(k);
         }
         std::ranges::reverse(compacted);
         return compacted;
@@ -362,38 +387,22 @@ public:
         page_header->max_key = std::numeric_limits<key_type>::min();
 
         // split
-        if (page_header->split_strategy == SplitPolicy::QUICK_PARTITION) {
-            // policy 1: quick partition by split key
-            size_t idx = compacted.size() * 3 / 4;
-            key_type split_key = extract_key(compacted[idx]);
-            for (const Tuple& t : compacted) {
-                if (extract_key(t) < split_key)
-                    this->insert(t); // back to old page
-                else
-                    new_leaf.insert(t); // to new page
-            }
-            // restore linked list
-            new_leaf.page_header->meta.next_id = page_header->meta.next_id;
-            page_header->meta.next_id = new_leaf.page_header->id;
-            return split_key;
-        }else {
-            // policy 2: sort on split
-            std::sort(compacted.begin(), compacted.end(), [&](const Tuple& a, const Tuple& b) {
-                return extract_key(a) < extract_key(b);
-            });
-            // todo modify percentage
-            size_t half = compacted.size() * 3 / 4;
-            for (size_t i = 0; i < half; ++i) insert(compacted[i]);
-            for (size_t i = half; i < compacted.size(); ++i) new_leaf.insert(compacted[i]);
-            page_header->meta.isSorted = true;
-            new_leaf.page_header->meta.isSorted = true;
+        std::sort(compacted.begin(), compacted.end(), [&](const Tuple& a, const Tuple& b) {
+            return extract_key(a) < extract_key(b);
+        });
+        // todo modify percentage
+        size_t half = compacted.size() * 3 / 4;
+        for (size_t i = 0; i < half; ++i) insert(compacted[i]);
+        for (size_t i = half; i < compacted.size(); ++i) new_leaf.insert(compacted[i]);
+        page_header->meta.isSorted = true;
+        new_leaf.page_header->meta.isSorted = true;
 
-            // restore linked list
-            new_leaf.page_header->meta.next_id = page_header->meta.next_id;
-            page_header->meta.next_id = new_leaf.page_header->id;
+        // restore linked list
+        new_leaf.page_header->meta.next_id = page_header->meta.next_id;
+        page_header->meta.next_id = new_leaf.page_header->id;
 
-            return new_leaf.min_key();
-        }
+        return new_leaf.min_key();
+
     }
 
     void compute_min_max() {

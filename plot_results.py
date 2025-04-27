@@ -3,30 +3,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Load CSV
-csv_file = "build/btree_benchmark.csv"
+plt.rcParams.update({'font.size': 14})
+csv_file = "build/btree_benchmark_cleaned.csv"
 data = pd.read_csv(csv_file)
 
 # Add percentage column
 data['Sortedness_Percent'] = data['Sortedness'] * 100
 
-# Set hatch patterns for different tree types
-# patterns = {
-#     "AppendTreeQuick": '',              # solid
-#     "AppendTreeSorted": 'xxx',         # cross hatch
-#     "OptimizedBTree": '...',      # dotted
-#     "SimpleBPlusTree": '///',     # slanted
-#     "LasTree": '++',
-# }
-
 colors = {
-    "AppendTreeQuick": '#B494AB',
-    "AppendTreeSorted": '#B4AEB2',
+    "LoggedBTree": '#E0E26E',
     "OptimizedBTree": '#74B488',
-    "SimpleBPlusTree": '#6AA4B4',
-    "LasTree": '#FFCC66',
+    "SimpleBTree": '#6AA4B4',
+    "LasTree": '#B494AB',
 }
-
-
 
 def plot_metric_by_read_ratio(data, metric, ylabel, title, filename, bar_unit_scale=1.0):
     read_ratios = sorted(data['ReadRatio'].unique())
@@ -54,14 +43,15 @@ def plot_metric_by_read_ratio(data, metric, ylabel, title, filename, bar_unit_sc
 
         ax.set_xticks(x + width * (len(tree_types) - 1) / 2)
         ax.set_xticklabels([f"{int(s)}" for s in sortedness])
-        ax.set_title(f"{title} (ReadRatio={ratio:.1f})")
+        ax.set_title(f"{title}")
         ax.set_xlabel('% Sortedness')
         ax.set_ylabel(ylabel)
-        ax.legend()
+        ax.legend(loc='center left', bbox_to_anchor=(1.0, 0.5), frameon=False)
         ax.grid(True, axis='y')
 
     plt.tight_layout()
     plt.savefig(filename)
+    plt.savefig(filename + ".pdf", bbox_inches='tight')
     print(f"Saved plot to: {filename}")
     # plt.show()
 
@@ -73,7 +63,7 @@ plot_metric_by_read_ratio(data, 'InsertTime', 'Insert Time (ms)', 'Insert Perfor
 plot_metric_by_read_ratio(data, 'PointLookupTime', 'Search Time (ms)', 'Point Query Performance', 'point_performance.png')
 plot_metric_by_read_ratio(data, 'RangeQueryTime', 'Search Time (ms)', 'Range Query Performance', 'range_performance.png')
 plot_metric_by_read_ratio(data, 'FastPathHits', 'Fast Path Hit (%)', 'Fast Path Usage', 'fast_path_hits.png', bar_unit_scale=1.0)
-plot_metric_by_read_ratio(data, 'MixedWorkloadTime', 'Mixed Workload Time (ms)', 'Mixed Workload Performance', 'mixed_workload.png')
+plot_metric_by_read_ratio(data, 'MixedWorkloadTime', 'Mixed Workload Time (ms)', 'Mixed Workload Performance (70% insert, 30% lookup)', 'mixed_workload.png')
 plot_metric_by_read_ratio(data, 'SortedLeafSearch', 'count', 'Search Count on Sorted Leaf', 'sorted_leaf_search_count.png')
 
 # Plot Leaf Count
@@ -103,14 +93,16 @@ def plot_utilization(data, filename):
 
         ax.set_ylim(0, 1)
         ax.set_xticks(sortedness)
-        ax.set_title(f"Leaf Utilization (ReadRatio={ratio:.1f})")
+        ax.set_title(f"Leaf Utilization")
+        # ax.set_title(f"Leaf Utilization (ReadRatio={ratio:.1f})")
         ax.set_xlabel('% Sortedness')
         ax.set_ylabel('Utilization Ratio')
         ax.grid(True)
-        ax.legend()
+        ax.legend(loc='center left', bbox_to_anchor=(1.0, 0.5), frameon=False)
 
     plt.tight_layout()
     plt.savefig(filename)
+    plt.savefig(filename + ".pdf", bbox_inches='tight')
     print(f"Saved plot to: {filename}")
     # plt.show()
 
