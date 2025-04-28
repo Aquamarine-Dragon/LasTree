@@ -54,8 +54,14 @@ void run_benchmark(size_t dataSize) {
     std::vector<double> sortedness_levels = {1.0, 0.95, 0.8, 0.5, 0.2, 0.0};
     // std::vector<double> sortedness_levels = {0.8};
     std::vector<double> read_ratios = {0.5};
-
     std::vector<ResultRow> results;
+
+    // custom distribution, larger skew with lower probability
+    std::vector<double> weights;
+    for (int i = 1; i <= 200; ++i) {
+        weights.push_back(std::exp(-0.05 * i)); // weight ~ e^{-0.05 * offset}
+    }
+    std::discrete_distribution<int> custom_dist(weights.begin(), weights.end());
 
     for (double sortedness: sortedness_levels) {
         std::cout << "Benchmarking: sortedness=" << sortedness << "\n";
@@ -64,10 +70,26 @@ void run_benchmark(size_t dataSize) {
         std::vector<key_type> keys(dataSize);
         std::iota(keys.begin(), keys.end(), 0);
 
+        // if (sortedness < 1.0) {
+        //     size_t shuffle_count = static_cast<size_t>(dataSize * (1.0 - sortedness));
+        //     std::mt19937 rng(42);
+        //     std::shuffle(keys.begin(), keys.begin() + shuffle_count, rng);
+        // }
+
         if (sortedness < 1.0) {
-            size_t shuffle_count = static_cast<size_t>(dataSize * (1.0 - sortedness));
+            size_t swap_times = static_cast<size_t>(dataSize * (1.0 - sortedness));
             std::mt19937 rng(42);
-            std::shuffle(keys.begin(), keys.begin() + shuffle_count, rng);
+
+            // pict a random index
+            std::uniform_int_distribution<size_t> dist(0, dataSize - 1);
+
+            for (size_t i = 0; i < swap_times; ++i) {
+                size_t idx1 = dist(rng);// random ele1
+                int offset = static_cast<int>(custom_dist(rng));
+                offset = std::max(1, offset); // offset at least 1
+                size_t idx2 = std::min(dataSize - 1, idx1 + offset); // random ele2
+                std::swap(keys[idx1], keys[idx2]);
+            }
         }
 
         // Generate tuples
@@ -92,6 +114,59 @@ void run_benchmark(size_t dataSize) {
             range_queries.push_back({start, end});
         }
 
+        // generate mixed_keys with sortedness
+        std::vector<key_type> mixed_keys(dataSize);
+        std::iota(mixed_keys.begin(), mixed_keys.end(), dataSize);
+
+        if (sortedness < 1.0) {
+            std::mt19937 rngg(42);
+
+            // build custom distribution for offset
+            std::vector<double> weights;
+            for (int i = 1; i <= 200; ++i) {
+                weights.push_back(std::exp(-0.05 * i)); // weight ~ e^{-0.05*offset}
+            }
+            std::discrete_distribution<int> custom_dist(weights.begin(), weights.end());
+
+            size_t swap_times = static_cast<size_t>(dataSize * (1.0 - sortedness));
+            std::uniform_int_distribution<size_t> dist(0, dataSize - 1);
+
+            for (size_t i = 0; i < swap_times; ++i) {
+                size_t idx1 = dist(rngg);
+                int offset = custom_dist(rngg) + 1;
+                size_t idx2 = std::min(idx1 + offset, dataSize - 1);
+                std::swap(mixed_keys[idx1], mixed_keys[idx2]);
+            }
+        }
+
+        // build mixed tuples
+        std::vector<Tuple> mixed_tuples;
+        for (key_type k : mixed_keys) {
+            std::vector<db::field_t> fields = {
+                db::field_t(k),
+                db::field_t("val-" + std::to_string(k))
+            };
+            mixed_tuples.emplace_back(fields, td.get_types());
+        }
+
+        // dynamic lookup key list
+        std::vector<key_type> inserted_keys;
+        std::vector<key_type> mixed_lookup_keys;
+        const int batch_size = 10;  // every 10 inserts, sample lookup keys
+
+
+        for (size_t i = 0; i < mixed_keys.size(); ++i) {
+            inserted_keys.push_back(mixed_keys[i]);
+
+            if (inserted_keys.size() % batch_size == 0) {
+                std::sample(
+                    inserted_keys.begin(), inserted_keys.end(),
+                    std::back_inserter(mixed_lookup_keys),
+                    batch_size / 2,
+                    std::mt19937(42 + inserted_keys.size())  // vary seed
+                );
+            }
+        }
 
 
         // === Benchmark 1: SimpleBPlusTree ===
@@ -130,7 +205,7 @@ void run_benchmark(size_t dataSize) {
             // Measure range query time
             t0 = std::chrono::high_resolution_clock::now();
             for (const auto &[start, end]: range_queries) {
-                auto results = tree.range(start, end);
+                auto range_result = tree.range(start, end);
                 // if (results.empty() && end >= start) throw std::runtime_error("Empty range result in simple tree");
             }
             t1 = std::chrono::high_resolution_clock::now();
@@ -145,32 +220,14 @@ void run_benchmark(size_t dataSize) {
             mix_tree.init();
 
             // Mixed workload (70% insert, 30% lookup)
-            std::vector<key_type> mixed_keys(dataSize);
-            std::iota(mixed_keys.begin(), mixed_keys.end(), dataSize); // New keys starting from dataSize
-
-            std::vector<Tuple> mixed_tuples;
-            for (key_type k: mixed_keys) {
-                std::vector<db::field_t> fields = {
-                    db::field_t(k),
-                    db::field_t("val-" + std::to_string(k))
-                };
-                mixed_tuples.emplace_back(fields, td.get_types());
-            }
-
-            // Sample 30% from the inserted keys as lookup keys
-            std::vector<key_type> lookup_keys;
-            std::sample(mixed_keys.begin(), mixed_keys.end(), std::back_inserter(lookup_keys),
-                        static_cast<size_t>(dataSize * 0.3), std::mt19937(42));
-
-            t0 = std::chrono::high_resolution_clock::now();
             size_t lookup_idx = 0;
-            for (size_t i = 0; i < dataSize; ++i) {
+            t0 = std::chrono::high_resolution_clock::now();
+            for (size_t i = 0; i < mixed_tuples.size(); ++i) {
                 if (i % 10 < 7) {  // 70% inserts
                     mix_tree.insert(mixed_tuples[i]);
                 } else {  // 30% lookups
-                    if (lookup_idx < lookup_keys.size()) {
-                        auto val = mix_tree.get(lookup_keys[lookup_idx++]);
-                        // if (!val.has_value()) throw std::runtime_error("Missing key in mixed workload");
+                    if (lookup_idx < mixed_lookup_keys.size()) {
+                        auto val = mix_tree.get(mixed_lookup_keys[lookup_idx++]);
                     }
                 }
             }
@@ -233,7 +290,7 @@ void run_benchmark(size_t dataSize) {
             // Measure range query time
             t0 = std::chrono::high_resolution_clock::now();
             for (const auto &[start, end]: range_queries) {
-                auto results = tree.range(start, end);
+                auto range_result = tree.range(start, end);
                 // if (results.empty() && end >= start) throw std::runtime_error("Empty range result in optimized tree");
             }
             t1 = std::chrono::high_resolution_clock::now();
@@ -241,8 +298,8 @@ void run_benchmark(size_t dataSize) {
             auto range_query_time_per_op = range_query_time / range_queries.size();
 
             // Mixed workload (70% insert, 30% lookup)
-            std::vector<key_type> mixed_keys(dataSize);
-            std::iota(mixed_keys.begin(), mixed_keys.end(), dataSize); // New keys starting from dataSize
+            // std::vector<key_type> mixed_keys(dataSize);
+            // std::iota(mixed_keys.begin(), mixed_keys.end(), dataSize); // New keys starting from dataSize
 
             const char *mix_name = "opt_mix.db";
             std::remove(mix_name);
@@ -252,32 +309,19 @@ void run_benchmark(size_t dataSize) {
             auto &mix_tree = db::getDatabase().get(mix_name);
             mix_tree.init();
 
-            std::vector<Tuple> mixed_tuples;
-            for (key_type k: mixed_keys) {
-                std::vector<db::field_t> fields = {
-                    db::field_t(k),
-                    db::field_t("val-" + std::to_string(k))
-                };
-                mixed_tuples.emplace_back(fields, td.get_types());
-            }
-
-            std::vector<key_type> lookup_keys;
-            std::sample(keys.begin(), keys.end(), std::back_inserter(lookup_keys),
-                        static_cast<size_t>(dataSize * 0.3), std::mt19937(42));
-
-            t0 = std::chrono::high_resolution_clock::now();
             size_t lookup_idx = 0;
-            for (size_t i = 0; i < dataSize; ++i) {
+            t0 = std::chrono::high_resolution_clock::now();
+            for (size_t i = 0; i < mixed_tuples.size(); ++i) {
                 if (i % 10 < 7) {  // 70% inserts
                     mix_tree.insert(mixed_tuples[i]);
                 } else {  // 30% lookups
-                    if (lookup_idx < lookup_keys.size()) {
-                        auto val = mix_tree.get(lookup_keys[lookup_idx++]);
-                        // if (!val.has_value()) throw std::runtime_error("Missing key in mixed workload");
+                    if (lookup_idx < mixed_lookup_keys.size()) {
+                        auto val = mix_tree.get(mixed_lookup_keys[lookup_idx++]);
                     }
                 }
             }
             t1 = std::chrono::high_resolution_clock::now();
+
             auto mixed_workload_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
             auto mixed_workload_time_per_op = mixed_workload_time / dataSize;
 
@@ -336,7 +380,7 @@ void run_benchmark(size_t dataSize) {
             // Measure range query time
             t0 = std::chrono::high_resolution_clock::now();
             for (const auto &[start, end]: range_queries) {
-                auto results = tree.range(start, end);
+                auto range_result = tree.range(start, end);
                 // if (results.empty() && end >= start) throw std::runtime_error("Empty range result in LSM tree");
             }
             t1 = std::chrono::high_resolution_clock::now();
@@ -344,9 +388,6 @@ void run_benchmark(size_t dataSize) {
             auto range_query_time_per_op = range_query_time / range_queries.size();
 
             // Mixed workload (70% insert, 30% lookup)
-            std::vector<key_type> mixed_keys(dataSize);
-            std::iota(mixed_keys.begin(), mixed_keys.end(), dataSize); // New keys starting from dataSize
-
             // construct a new tree for mixed workload
             const char *mix_name = "lsm_mix.db";
             std::remove(mix_name);
@@ -356,28 +397,14 @@ void run_benchmark(size_t dataSize) {
             auto &mix_tree = db::getDatabase().get(mix_name);
             mix_tree.init();
 
-            std::vector<Tuple> mixed_tuples;
-            for (key_type k: mixed_keys) {
-                std::vector<db::field_t> fields = {
-                    db::field_t(k),
-                    db::field_t("val-" + std::to_string(k))
-                };
-                mixed_tuples.emplace_back(fields, td.get_types());
-            }
-
-            std::vector<key_type> lookup_keys;
-            std::sample(keys.begin(), keys.end(), std::back_inserter(lookup_keys),
-                        static_cast<size_t>(dataSize * 0.3), std::mt19937(42));
-
-            t0 = std::chrono::high_resolution_clock::now();
             size_t lookup_idx = 0;
-            for (size_t i = 0; i < dataSize; ++i) {
+            t0 = std::chrono::high_resolution_clock::now();
+            for (size_t i = 0; i < mixed_tuples.size(); ++i) {
                 if (i % 10 < 7) {  // 70% inserts
                     mix_tree.insert(mixed_tuples[i]);
                 } else {  // 30% lookups
-                    if (lookup_idx < lookup_keys.size()) {
-                        auto val = mix_tree.get(lookup_keys[lookup_idx++]);
-                        // if (!val.has_value()) throw std::runtime_error("Missing key in mixed workload");
+                    if (lookup_idx < mixed_lookup_keys.size()) {
+                        auto val = mix_tree.get(mixed_lookup_keys[lookup_idx++]);
                     }
                 }
             }
@@ -438,7 +465,7 @@ void run_benchmark(size_t dataSize) {
             // Measure range query time
             t0 = std::chrono::high_resolution_clock::now();
             for (const auto &[start, end]: range_queries) {
-                auto results = tree.range(start, end);
+                auto range_result = tree.range(start, end);
                 // if (results.empty() && end >= start) throw std::runtime_error("Empty range result in LaS tree");
             }
             t1 = std::chrono::high_resolution_clock::now();
@@ -446,9 +473,6 @@ void run_benchmark(size_t dataSize) {
             auto range_query_time_per_op = range_query_time / range_queries.size();
 
             // Mixed workload (70% insert, 30% lookup)
-            std::vector<key_type> mixed_keys(dataSize);
-            std::iota(mixed_keys.begin(), mixed_keys.end(), dataSize); // New keys starting from dataSize
-
             // construct a new tree for mixed workload
             const char *mix_name = "las_mix.db";
             std::remove(mix_name);
@@ -458,32 +482,19 @@ void run_benchmark(size_t dataSize) {
             mix_tree.init();
 
 
-            std::vector<Tuple> mixed_tuples;
-            for (key_type k: mixed_keys) {
-                std::vector<db::field_t> fields = {
-                    db::field_t(k),
-                    db::field_t("val-" + std::to_string(k))
-                };
-                mixed_tuples.emplace_back(fields, td.get_types());
-            }
-
-            std::vector<key_type> lookup_keys;
-            std::sample(keys.begin(), keys.end(), std::back_inserter(lookup_keys),
-                        static_cast<size_t>(dataSize * 0.3), std::mt19937(42));
-
-            t0 = std::chrono::high_resolution_clock::now();
             size_t lookup_idx = 0;
-            for (size_t i = 0; i < dataSize; ++i) {
+            t0 = std::chrono::high_resolution_clock::now();
+            for (size_t i = 0; i < mixed_tuples.size(); ++i) {
                 if (i % 10 < 7) {  // 70% inserts
                     mix_tree.insert(mixed_tuples[i]);
                 } else {  // 30% lookups
-                    if (lookup_idx < lookup_keys.size()) {
-                        auto val = mix_tree.get(lookup_keys[lookup_idx++]);
-                        // if (!val.has_value()) throw std::runtime_error("Missing key in mixed workload");
+                    if (lookup_idx < mixed_lookup_keys.size()) {
+                        auto val = mix_tree.get(mixed_lookup_keys[lookup_idx++]);
                     }
                 }
             }
             t1 = std::chrono::high_resolution_clock::now();
+
             auto mixed_workload_time = std::chrono::duration<double, std::milli>(t1 - t0).count();
             auto mixed_workload_time_per_op = mixed_workload_time / dataSize;
 
