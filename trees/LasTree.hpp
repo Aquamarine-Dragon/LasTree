@@ -117,9 +117,6 @@ public:
 
         PageId leaf_pid{filename, leaf_id};
         std::unique_lock<std::shared_mutex> lock(get_leaf_rwlock(leaf_id));
-        // std::cout << "insert_fast_path get_mut_page for "
-        //           << " PageId= " << leaf_id
-        //           << std::endl;
         Page &page = buffer_pool.get_mut_page(leaf_pid);
         leaf_t leaf(page, td, key_index);
 
@@ -553,9 +550,6 @@ private:
 
         while (true) {
             PageId pid{filename, node_id};
-            // std::cout << "find_path_to_node get_mut_page for "
-            //       << " PageId= " << node_id
-            //       << std::endl;
             Page &page = buffer_pool.get_mut_page(pid);
 
             auto *base = reinterpret_cast<BaseHeader *>(page.data());
@@ -586,9 +580,6 @@ private:
         for (auto it = path.rbegin(); it != path.rend(); ++it) {
             node_id_t node_id = *it;
             PageId page_id{filename, node_id};
-            // std::cout << "internal_insert get_mut_page for "
-            //       << " PageId= " << node_id
-            //       << std::endl;
             Page &page = buffer_pool.get_mut_page(page_id);
             internal_t node(page); // load internal node from buffer
             buffer_pool.mark_dirty(page_id);

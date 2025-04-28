@@ -85,10 +85,7 @@ public:
     // Insert a tuple into the tree
     void insert(const Tuple &tuple) override {
         BufferPool &buffer_pool = getDatabase().getBufferPool();
-        // std::unique_lock<std::timed_mutex> lock(tree_mutex);
         key_type key = std::get<key_type>(tuple.get_field(key_index));
-
-        // std::cout << "inserting " << key << std::endl;
 
         // try fast path insertion if key is in the current fast path range
         if (can_use_fast_path(key)) {

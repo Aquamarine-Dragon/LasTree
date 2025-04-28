@@ -237,14 +237,7 @@ public:
         key_type key = extract_key(t);
         uint16_t insert_pos = value_slot(key);
 
-        // std::cout << "[DEBUG] Before inserting key=" << extract_key(t) << std::endl;
-        // std::cout << "[DEBUG] Before heap end=" << page_header->heap_end << std::endl;
-        // print_page_debug();
-
         page_header->heap_end -= len;
-
-        // auto offset = static_cast<uint16_t>(page_header.heap_end);
-
         td.serialize(buffer + page_header->heap_end, t);
 
         if (insert_pos < page_header->slot_count) {
@@ -289,11 +282,7 @@ public:
         size_t moved = 0;
         int i = static_cast<int>(page_header->slot_count - 1);
 
-        // std::cout << "[DEBUG] Before heap end=" << page_header->heap_end << std::endl;
-        // print_page_debug();
-
         // find key index which makes moved >= 25%
-        // todo modify percentage
         for (; i >= 0; --i) {
             const auto &slot = slots[i];
             if (!slot.valid) continue;
@@ -308,7 +297,6 @@ public:
 
             Tuple t = td.deserialize(buffer + slot.offset);
             new_leaf.insert(t);
-            // slots[j].valid = false;
         }
 
         page_header->size = i + 1;
@@ -331,9 +319,6 @@ public:
         for (const auto& t : to_keep) {
             insert(t); // this will update heap_end properly
         }
-
-        // std::cout << "[DEBUG] After heap end=" << page_header->heap_end << std::endl;
-        // print_page_debug();
 
         // update next pointers
         new_leaf.page_header->meta.next_id = page_header->meta.next_id;

@@ -390,7 +390,6 @@ public:
         std::sort(compacted.begin(), compacted.end(), [&](const Tuple& a, const Tuple& b) {
             return extract_key(a) < extract_key(b);
         });
-        // todo modify percentage
         size_t half = compacted.size() * 3 / 4;
         for (size_t i = 0; i < half; ++i) insert(compacted[i]);
         for (size_t i = half; i < compacted.size(); ++i) new_leaf.insert(compacted[i]);

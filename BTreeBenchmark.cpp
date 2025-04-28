@@ -70,12 +70,6 @@ void run_benchmark(size_t dataSize) {
         std::vector<key_type> keys(dataSize);
         std::iota(keys.begin(), keys.end(), 0);
 
-        // if (sortedness < 1.0) {
-        //     size_t shuffle_count = static_cast<size_t>(dataSize * (1.0 - sortedness));
-        //     std::mt19937 rng(42);
-        //     std::shuffle(keys.begin(), keys.begin() + shuffle_count, rng);
-        // }
-
         if (sortedness < 1.0) {
             size_t swap_times = static_cast<size_t>(dataSize * (1.0 - sortedness));
             std::mt19937 rng(42);

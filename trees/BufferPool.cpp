@@ -35,12 +35,6 @@ namespace db {
         }
 
         throw std::runtime_error("BufferPool::fetch_slot: No available slot to evict!");
-
-        // size_t slot = lru.back();
-        // const PageId& old_id = slot_to_id.at(slot);
-        // evict(old_id);
-        // free_list.pop_back();// reserve the slot
-        // return slot;
     }
 
     void BufferPool::touch(size_t slot) {
@@ -64,10 +58,6 @@ namespace db {
             size_t slot = pid_to_slot.at(pid);
             touch(slot);
             pin_page(pid);
-            // std::cout << "[Thread " << std::this_thread::get_id()
-            //           << "] getting page for  "
-            //           << " (PageId= " << pid.page << " at slot=" << slot
-            //           << std::endl;
             return pages[slot];
         }
 
@@ -140,34 +130,18 @@ namespace db {
         lru.erase(slot_lru_map[slot]);
         slot_lru_map.erase(slot);
         free_list.push_back(slot);
-        // std::cout << "[Thread " << std::this_thread::get_id() << "] evicted slot " << slot << std::endl;
-        // pin_count.erase(slot);
     }
 
     void BufferPool::pin_page(const PageId &id) {
         size_t slot = pid_to_slot.at(id);
         pin_count[slot].fetch_add(1, std::memory_order_relaxed);
-        // std::cout << "[Thread " << std::this_thread::get_id()
-        //               << "] Pinned slot=" << slot
-        //               << " (PageId=" << id.page << "), pin count now = " << pin_count[slot]
-        //               << std::endl;
     }
 
     void BufferPool::unpin_page(const PageId &id) {
         std::lock_guard<std::mutex> lock(pool_mutex);
-        // if (!pid_to_slot.contains(id)) return;
         size_t slot = pid_to_slot.at(id);
         if (pin_count[slot].fetch_sub(1, std::memory_order_relaxed) <= 0) {
             pin_count.erase(slot);
-        //     // std::cout << "[Thread " << std::this_thread::get_id()
-        //     //           << "] Unpinned slot=" << slot
-        //     //           << " (PageId=" << id.page << ") — removed from pin_count"
-        //     //           << std::endl;
-        } else {
-        //     // std::cout << "[Thread " << std::this_thread::get_id()
-        //     //           << "] Unpinned slot=" << slot
-        //     //           << " (PageId=" << id.page << "), pin count now = " << pin_count[slot]
-        //     //           << std::endl;
         }
     }
 
